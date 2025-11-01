@@ -161,6 +161,59 @@ Device_Info :: struct {
 	index: Maybe(int),
 }
 
+// Config for loading weights/constants from files (shared structure)
+Weight_Config :: struct {
+	path_name:   string,
+	is_param:    bool,
+	use_pickle:  bool,
+	tensor_meta: Tensor_Meta,
+}
+
+// Helper: Load binary f32 tensor from file
+load_f32_tensor_from_file :: proc(path: string) -> (tensor: []f32, ok: bool) {
+	data, read_ok := os.read_entire_file(path)
+	if !read_ok do return nil, false
+	defer delete(data)
+	
+	num_floats := len(data) / size_of(f32)
+	floats := transmute([]f32)data
+	
+	result := make([]f32, num_floats)
+	copy(result, floats[:num_floats])
+	return result, true
+}
+
+// Helper: Load tensor config from JSON file and load all tensor files
+load_tensor_config :: proc(config_path: string, data_dir: string) -> (tensors: map[string][]f32, ok: bool) {
+	tensors = make(map[string][]f32)
+	
+	config_data, read_ok := os.read_entire_file(config_path)
+	if !read_ok do return tensors, false
+	defer delete(config_data)
+	
+	// Parse config
+	Config_Root :: struct {
+		config: map[string]Weight_Config,
+	}
+	
+	config: Config_Root
+	parse_err := json.unmarshal(config_data, &config)
+	if parse_err != nil do return tensors, false
+	defer delete(config.config)
+	
+	// Load each tensor file
+	for tensor_name, tensor_info in config.config {
+		tensor_path := fmt.tprintf("%s/%s", data_dir, tensor_info.path_name)
+		tensor_data, t_ok := load_f32_tensor_from_file(tensor_path)
+		if t_ok {
+			tensors[tensor_name] = tensor_data
+			fmt.printf("Loaded %s: %d floats from %s\n", tensor_name, len(tensor_data), tensor_info.path_name)
+		}
+	}
+	
+	return tensors, true
+}
+
 Signature :: struct {
 	input_specs: []Input_Spec,
 	output_specs: []Output_Spec,
@@ -212,46 +265,15 @@ Graph_Executor :: struct {
 build_constants_from_graph :: proc(graph: ^Graph, model_dir: string) -> (constants: map[string][]f32, ok: bool) {
 	constants = make(map[string][]f32)
 	
-	// 1. Load file-based constants from model/data/constants/
+	// 1. Load file-based constants from model/data/constants/ using helper
 	constants_config_path := fmt.tprintf("%s/data/constants/model_constants_config.json", model_dir)
-	if config_data, read_ok := os.read_entire_file(constants_config_path); read_ok {
-		defer delete(config_data)
-		
-		// Parse constants config (similar structure to weights config)
-		Constants_Config_Root :: struct {
-			config: map[string]Weight_Config,
+	file_constants, loaded := load_tensor_config(constants_config_path, fmt.tprintf("%s/data/constants", model_dir))
+	if loaded {
+		// Merge file constants into our map
+		for name, data in file_constants {
+			constants[name] = data
 		}
-		
-		Weight_Config :: struct {
-			path_name:   string,
-			is_param:    bool,
-			use_pickle:  bool,
-			tensor_meta: Tensor_Meta,
-		}
-		
-		config: Constants_Config_Root
-		parse_err := json.unmarshal(config_data, &config)
-		if parse_err == nil {
-			defer delete(config.config)
-			
-			// Load each constant file
-			for const_name, const_info in config.config {
-				const_path := fmt.tprintf("%s/data/constants/%s", model_dir, const_info.path_name)
-				const_data, c_ok := os.read_entire_file(const_path)
-				if c_ok {
-					defer delete(const_data)
-					
-					// Convert bytes to floats
-					num_floats := len(const_data) / size_of(f32)
-					const_floats := transmute([]f32)const_data
-					
-					constants[const_name] = make([]f32, num_floats)
-					copy(constants[const_name], const_floats[:num_floats])
-					
-					fmt.printf("Loaded constant %s: %v floats\n", const_name, num_floats)
-				}
-			}
-		}
+		delete(file_constants)
 	}
 	
 	// 2. Extract inline scalar constants from graph nodes

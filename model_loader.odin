@@ -43,59 +43,11 @@ load_pytorch_model_full :: proc(model_dir: string, allocator := context.allocato
 load_weights_from_dir :: proc(model_dir: string, allocator := context.allocator) -> (weights: map[string][]f32, ok: bool) {
 	context.allocator = allocator
 	
-	weights = make(map[string][]f32)
-	
-	// Read weights config
+	// Use the shared helper to load weights
 	config_path := fmt.tprintf("%s/data/weights/model_weights_config.json", model_dir)
-	config_data, read_ok := os.read_entire_file(config_path)
-	if !read_ok {
-		fmt.printf("Failed to read weights config: %s\n", config_path)
-		return weights, false
-	}
-	defer delete(config_data)
+	data_dir := fmt.tprintf("%s/data/weights", model_dir)
 	
-	// Parse weights config
-	Weights_Config_Root :: struct {
-		config: map[string]Weight_Config,
-	}
-	
-	Weight_Config :: struct {
-		path_name:   string,
-		is_param:    bool,
-		use_pickle:  bool,
-		tensor_meta: Tensor_Meta,
-	}
-	
-	config: Weights_Config_Root
-	parse_err := json.unmarshal(config_data, &config)
-	if parse_err != nil {
-		fmt.printf("Failed to parse weights config: %v\n", parse_err)
-		return weights, false
-	}
-	defer delete(config.config)
-	
-	// Load each weight file
-	for param_name, weight_info in config.config {
-		weight_path := fmt.tprintf("%s/data/weights/%s", model_dir, weight_info.path_name)
-		weight_data, w_ok := os.read_entire_file(weight_path)
-		if !w_ok {
-			fmt.printf("Failed to read weight file: %s\n", weight_path)
-			continue
-		}
-		defer delete(weight_data)
-		
-		// Convert bytes to floats
-		num_floats := len(weight_data) / size_of(f32)
-		weight_floats := transmute([]f32)weight_data
-		
-		// Store with parameter name
-		weights[param_name] = make([]f32, num_floats)
-		copy(weights[param_name], weight_floats[:num_floats])
-		
-		fmt.printf("Loaded %s: %v floats from %s\n", param_name, num_floats, weight_info.path_name)
-	}
-	
-	return weights, true
+	return load_tensor_config(config_path, data_dir)
 }
 
 // Create executor from loaded model

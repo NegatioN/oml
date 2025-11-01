@@ -98,7 +98,7 @@ test_layer_destroy :: proc(t: ^testing.T) {
 	// If no crash/leak, test passes
 	
 	// Test Add destroy
-	add_layer := Add{value = make([]f32, 1)}
+	add_layer := Add{}
 	layer2: Layer = add_layer
 	layer_destroy(&layer2)
 	// If no crash/leak, test passes
