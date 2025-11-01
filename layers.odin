@@ -158,28 +158,25 @@ arange_forward :: proc(output: []f32) {
     }
 }
 
-add_forward :: proc(inp: []f32, other: []f32, output: []f32) {
+simple_op_forward :: proc(inp: []f32, other: []f32, output: []f32, op: Broadcast_Op) {
     // Use broadcasting utility function
     input_len := len(inp)
     other_len := len(other)
     
     if input_len >= other_len {
         // inp is larger or equal, broadcast other to inp's shape
-        broadcast_op_larger_smaller(inp, other, output, .Add)
+        broadcast_op_larger_smaller(inp, other, output, op)
     } else {
         // other is larger, broadcast inp to other's shape
-        broadcast_op_smaller_larger(inp, other, output, .Add)
+        broadcast_op_smaller_larger(inp, other, output, op)
     }
 }
 
-// Create Add layer with a tensor value
-add_create:: proc() -> Add {
-    return Add{}
+add_forward :: proc(inp: []f32, other: []f32, output: []f32) {
+    simple_op_forward(inp, other, output, .Add)
 }
-
-// Create ReLU layer (no initialization needed)
-relu_create :: proc() -> ReLU {
-    return ReLU{}
+sub_forward :: proc(inp: []f32, other: []f32, output: []f32) {
+    simple_op_forward(inp, other, output, .Sub)
 }
 
 // ReLU forward pass: output = max(0, input)

@@ -74,16 +74,9 @@ node_arg_to_name :: proc(arg: Node_Arg, allocator := context.allocator) -> (name
 	return "", false
 }
 
-// Helper to get tensor data from a Node_Arg
-// Returns the tensor from executor if it's a tensor reference,
-// or creates a single-element array for scalar values
+// Helper to get tensor data from a Node_Arg even if its a weight, tensor or constant
 get_tensor_from_arg :: proc(arg: Node_Arg, executor: ^Graph_Executor, allocator := context.allocator) -> (tensor: []f32, ok: bool) {
-    fmt.println(executor.constants)
-    fmt.println(arg)
 	context.allocator = allocator
-	
-	// Check if it's a tensor reference
-
 	if tensor_name, has_tensor := node_arg_to_name(arg); has_tensor {
 		// Look up tensor in executor's runtime tensors, constants, or weights
 		if t, found := executor.tensors[tensor_name]; found {
@@ -100,7 +93,7 @@ get_tensor_from_arg :: proc(arg: Node_Arg, executor: ^Graph_Executor, allocator 
 }
 
 Node_Operation :: enum {
-    Linear, ReLU, Add, Arange, Unknown,
+    Linear, ReLU, Add, Sub, Arange, LiftFreshCopy, Detach, Unknown,
 }
 
 parse_operation :: proc(target: string) -> Node_Operation {
@@ -116,8 +109,14 @@ parse_operation :: proc(target: string) -> Node_Operation {
         return .ReLU
     case "torch.ops.aten.add.Tensor":
         return .Add
+    case "torch.ops.aten.sub.Tensor":
+        return .Sub
     case "torch.ops.aten.arange.default":
         return .Arange
+    case "torch.ops.aten.lift_fresh_copy.default":
+        return .LiftFreshCopy
+    case "torch.ops.aten.detach_.default":
+        return .Detach
     case:
         return .Unknown
     }
@@ -313,16 +312,16 @@ build_layers_from_graph :: proc(graph: ^Graph, weights: map[string][]f32) -> []L
 			// Create Linear layer
 			layer = linear_create(in_features, out_features, weight, bias)
 
-		case Node_Operation.ReLU:
-			layer := relu_create()
-
-        case Node_Operation.Add:
-            //weight_name := node.inputs[1].arg.as_tensor.?.name  //TODO if we add the value manually here as an int, the fetching is different.
-            layer = add_create()
 
         case Node_Operation.Arange:
             end := node.inputs[0].arg.as_int.?
             layer = arange_create(end)
+
+        case Node_Operation.ReLU:
+        case Node_Operation.Add:
+        case Node_Operation.Sub:
+        case Node_Operation.LiftFreshCopy:
+        case Node_Operation.Detach:
 		case Node_Operation.Unknown:
             fmt.printf("Unsupported operation: %s\n", node.target)
 			// Unknown layer type - could log warning
@@ -383,8 +382,14 @@ execute_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^Layer
 		return execute_relu_node(executor, node, layer)
     case Node_Operation.Add:
         return execute_add_node(executor, node, layer)
+    case Node_Operation.Sub:
+        return execute_sub_node(executor, node, layer)
     case Node_Operation.Arange:
         return execute_arange_node(executor, node, layer)
+    case Node_Operation.LiftFreshCopy:
+        return execute_copy_node(executor, node)
+    case Node_Operation.Detach:
+        return execute_copy_node(executor, node)
 	case Node_Operation.Unknown:
 		fmt.printf("Unsupported operation: %s\n", node.target)
 		return false
@@ -435,7 +440,6 @@ execute_relu_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^
 }
 
 execute_add_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^Layer) -> bool {
-	// Get input tensors using helper function
 	input_1, ok1 := get_tensor_from_arg(node.inputs[0].arg, executor)
 	if !ok1 {
 		fmt.println("Failed to get first input for add operation")
@@ -462,6 +466,33 @@ execute_add_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^L
 	return true
 }
 
+execute_sub_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^Layer) -> bool {
+    input_1, ok1 := get_tensor_from_arg(node.inputs[0].arg, executor)
+    if !ok1 {
+        fmt.println("Failed to get first input for add operation")
+        return false
+    }
+
+    input_2,  ok2 := get_tensor_from_arg(node.inputs[1].arg, executor)
+    if !ok2 {
+        fmt.println("Failed to get second input for add operation")
+        return false
+    }
+
+    // Determine output size (larger of the two inputs)
+    output_size := max(len(input_1), len(input_2))
+    output := make([]f32, output_size)
+
+    // Execute add operation
+    sub_forward(input_1, input_2, output)
+
+    // Store result
+    output_name := node.outputs[0].as_tensor.?.name
+    executor.tensors[output_name] = output
+
+    return true
+}
+
 execute_arange_node:: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^Layer) -> bool {
     arange_layer := layer.(Arange) or_return
 
@@ -477,6 +508,21 @@ execute_arange_node:: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: 
     //arange_forward(output)
 
     // Store result
+    executor.tensors[output_name] = output
+    return true
+}
+
+execute_copy_node:: proc(executor: ^Graph_Executor, node: ^Graph_Node) -> bool {
+    input_1, ok1 := get_tensor_from_arg(node.inputs[0].arg, executor)
+    if !ok1 {
+        fmt.println("Failed to get first input for add operation")
+        return false
+    }
+    output_name := node.outputs[0].as_tensor.?.name
+
+    output := make([]f32, len(input_1))
+    copy(output, input_1)
+
     executor.tensors[output_name] = output
     return true
 }
