@@ -112,15 +112,18 @@ create_executor_from_model :: proc(model: ^Graph_Model, weights: map[string][]f3
 				copied_weight := make([]f32, len(weight_data))
 				copy(copied_weight, weight_data)
 				remapped_weights[graph_name] = copied_weight
-				fmt.printf("[DEBUG] Remapped %s -> %s: %v\n", param_name, graph_name, copied_weight)
 			}
 		}
 	}
+	
+	// Build layers from graph nodes
+	layers := build_layers_from_graph(&model.graph_module.graph, remapped_weights)
 	
 	executor := Graph_Executor{
 		graph = &model.graph_module.graph,
 		weights = remapped_weights,
 		tensors = make(map[string][]f32),
+		layers = layers,
 	}
 	return executor
 }
@@ -152,6 +155,8 @@ test_loaded_model :: proc() {
 	defer {
 		for _, t in executor.tensors do delete(t)
 		delete(executor.tensors)
+		for &layer in executor.layers do layer_destroy(&layer)
+		delete(executor.layers)
 	}
 	
 	// Test inference

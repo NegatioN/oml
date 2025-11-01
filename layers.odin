@@ -6,11 +6,32 @@ Linear :: struct {
     out_features: int,
     weight:       []f32,  // Shape: [out_features, in_features]
     bias:         []f32,  // Shape: [out_features]
-//TODO should the output of the layer live in the layer to avoid re-allocation?
 }
 
-// Create a new Linear layer
-linear_init :: proc(in_features, out_features: int) -> (layer: Linear) {
+// ReLU activation layer (stateless, but kept for consistency)
+ReLU :: struct {
+    // No parameters needed
+}
+
+// Union type for all layer types
+Layer :: union {
+    Linear,
+    ReLU,
+}
+
+// Create a new Linear layer with given dimensions and weight/bias data
+linear_create :: proc(in_features, out_features: int, weight, bias: []f32) -> Linear {
+    return Linear{
+        in_features = in_features,
+        out_features = out_features,
+        weight = weight,
+        bias = bias,
+    }
+}
+
+// Create a new Linear layer with random initialization
+linear_init :: proc(in_features, out_features: int) -> Linear {
+    layer: Linear
     layer.in_features = in_features
     layer.out_features = out_features
 
@@ -33,10 +54,10 @@ linear_destroy :: proc(layer: ^Linear) {
 }
 
 // Forward pass: output = input * weight^T + bias
-linear_forward :: proc(layer: ^Linear, input: []f32) -> []f32 {
+// This is the core computation logic for a linear layer
+linear_forward :: proc(layer: ^Linear, input: []f32, output: []f32) {
     assert(len(input) == layer.in_features, "Input size mismatch")
-
-    output := make([]f32, layer.out_features)
+    assert(len(output) == layer.out_features, "Output size mismatch")
 
     for i in 0..<layer.out_features {
         sum := layer.bias[i]
@@ -46,6 +67,52 @@ linear_forward :: proc(layer: ^Linear, input: []f32) -> []f32 {
         }
         output[i] = sum
     }
+}
 
+// Convenience wrapper that allocates output
+linear_forward_alloc :: proc(layer: ^Linear, input: []f32) -> []f32 {
+    output := make([]f32, layer.out_features)
+    linear_forward(layer, input, output)
     return output
+}
+
+// Create ReLU layer (no initialization needed)
+relu_create :: proc() -> ReLU {
+    return ReLU{}
+}
+
+// ReLU forward pass: output = max(0, input)
+relu_forward :: proc(layer: ^ReLU, input: []f32, output: []f32) {
+    assert(len(input) == len(output), "Input and output size mismatch")
+    
+    for i in 0..<len(input) {
+        output[i] = max(0, input[i])
+    }
+}
+
+// Convenience wrapper that allocates output
+relu_forward_alloc :: proc(layer: ^ReLU, input: []f32) -> []f32 {
+    output := make([]f32, len(input))
+    relu_forward(layer, input, output)
+    return output
+}
+
+// Generic layer forward pass - dispatches to the correct implementation
+layer_forward :: proc(layer: ^Layer, input: []f32, output: []f32) {
+    switch &l in layer {
+    case Linear:
+        linear_forward(&l, input, output)
+    case ReLU:
+        relu_forward(&l, input, output)
+    }
+}
+
+// Destroy a layer (frees any allocated memory)
+layer_destroy :: proc(layer: ^Layer) {
+    switch &l in layer {
+    case Linear:
+        linear_destroy(&l)
+    case ReLU:
+        // Nothing to destroy for ReLU
+    }
 }

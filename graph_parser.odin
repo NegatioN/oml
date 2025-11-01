@@ -106,6 +106,48 @@ Graph_Executor :: struct {
 	graph: ^Graph,
 	weights: map[string][]f32,
 	tensors: map[string][]f32,  // Runtime tensor values
+	layers: []Layer,             // Pre-built layers in execution order
+}
+
+// Build layers from graph nodes during initialization
+build_layers_from_graph :: proc(graph: ^Graph, weights: map[string][]f32) -> []Layer {
+	layers := make([dynamic]Layer)
+	
+	for &node in graph.nodes {
+		layer: Layer
+		
+		switch node.target {
+		case "torch.ops.aten.linear.default":
+			// Extract layer parameters
+			weight_name := node.inputs[1].arg.as_tensor.?.name
+			bias_name := node.inputs[2].arg.as_tensor.?.name
+			
+			weight := weights[weight_name]
+			bias := weights[bias_name]
+			
+			// Get dimensions from metadata
+			weight_meta := graph.tensor_values[weight_name]
+			out_features := weight_meta.sizes[0].as_int
+			in_features := weight_meta.sizes[1].as_int
+			
+			// Create Linear layer
+			linear_layer := linear_create(in_features, out_features, weight, bias)
+			layer = linear_layer
+			
+		case "torch.ops.aten.relu.default":
+			// Create ReLU layer (stateless)
+			relu_layer := relu_create()
+			layer = relu_layer
+			
+		case:
+			// Unknown layer type - could log warning
+			continue
+		}
+		
+		append(&layers, layer)
+	}
+	
+	return layers[:]
 }
 
 // Execute the graph with input
@@ -120,17 +162,9 @@ execute_graph :: proc(executor: ^Graph_Executor, input: []f32) -> (output: []f32
 	executor.tensors["x"] = make([]f32, len(input))
 	copy(executor.tensors["x"], input)
 	
-	// Execute each node in order
-	for &node in executor.graph.nodes {
-		switch node.target {
-		case "torch.ops.aten.linear.default":
-			execute_linear(executor, &node) or_return
-		case "torch.ops.aten.relu.default":
-			execute_relu(executor, &node) or_return
-		case:
-			fmt.printf("Unsupported operation: %s\n", node.target)
-			return nil, false
-		}
+	// Execute each node and its corresponding layer in order
+	for &node, i in executor.graph.nodes {
+		execute_node(executor, &node, &executor.layers[i]) or_return
 	}
 	
 	// Get output tensor (assuming single output)
@@ -151,61 +185,59 @@ execute_graph :: proc(executor: ^Graph_Executor, input: []f32) -> (output: []f32
 	return result, true
 }
 
-// Execute linear operation: output = input @ weight^T + bias
-execute_linear :: proc(executor: ^Graph_Executor, node: ^Graph_Node) -> bool {
-	// Get input tensors by name
+// Execute a single node with its pre-built layer
+execute_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^Layer) -> bool {
+	switch node.target {
+	case "torch.ops.aten.linear.default":
+		return execute_linear_node(executor, node, layer)
+	case "torch.ops.aten.relu.default":
+		return execute_relu_node(executor, node, layer)
+	case:
+		fmt.printf("Unsupported operation: %s\n", node.target)
+		return false
+	}
+}
+
+// Execute linear node using pre-built Linear layer
+execute_linear_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^Layer) -> bool {
+	linear_layer := layer.(Linear) or_return
+	
+	// Get input and output names
 	input_name := node.inputs[0].arg.as_tensor.?.name
-	weight_name := node.inputs[1].arg.as_tensor.?.name
-	bias_name := node.inputs[2].arg.as_tensor.?.name
 	output_name := node.outputs[0].as_tensor.?.name
 	
-	// Fetch tensors
+	// Fetch input tensor
 	input := executor.tensors[input_name] if input_name in executor.tensors else executor.weights[input_name]
-	weight := executor.weights[weight_name]
-	bias := executor.weights[bias_name]
-	
-	// Debug: Print what we're using
-	fmt.printf("[DEBUG] Linear: input=%s(%v), weight=%s(%v), bias=%s(%v)\n", 
-		input_name, input, weight_name, weight, bias_name, bias)
-	
-	// Get shapes from metadata
-	weight_meta := executor.graph.tensor_values[weight_name]
-	out_features := weight_meta.sizes[0].as_int
-	in_features := weight_meta.sizes[1].as_int
-	
-	fmt.printf("[DEBUG] Linear shapes: out_features=%d, in_features=%d\n", out_features, in_features)
 	
 	// Allocate output
-	output := make([]f32, out_features)
+	output := make([]f32, linear_layer.out_features)
 	
-	// Compute: output = input @ weight^T + bias
-	for i in 0..<out_features {
-		sum := bias[i]
-		for j in 0..<in_features {
-			weight_idx := i * in_features + j
-			sum += input[j] * weight[weight_idx]
-		}
-		output[i] = sum
-	}
+	// Execute the layer
+	linear_forward(&linear_layer, input, output)
 	
-	fmt.printf("[DEBUG] Linear output: %v\n", output)
-	
+	// Store result
 	executor.tensors[output_name] = output
 	return true
 }
 
-// Execute ReLU operation: output = max(0, input)
-execute_relu :: proc(executor: ^Graph_Executor, node: ^Graph_Node) -> bool {
+// Execute ReLU node using pre-built ReLU layer
+execute_relu_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^Layer) -> bool {
+	relu_layer := layer.(ReLU) or_return
+	
+	// Get input and output names
 	input_name := node.inputs[0].arg.as_tensor.?.name
 	output_name := node.outputs[0].as_tensor.?.name
 	
+	// Fetch input tensor
 	input := executor.tensors[input_name]
+	
+	// Allocate output
 	output := make([]f32, len(input))
 	
-	for i in 0..<len(input) {
-		output[i] = max(0, input[i])
-	}
+	// Execute the layer
+	relu_forward(&relu_layer, input, output)
 	
+	// Store result
 	executor.tensors[output_name] = output
 	return true
 }
