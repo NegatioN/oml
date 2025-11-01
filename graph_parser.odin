@@ -164,10 +164,16 @@ execute_linear :: proc(executor: ^Graph_Executor, node: ^Graph_Node) -> bool {
 	weight := executor.weights[weight_name]
 	bias := executor.weights[bias_name]
 	
+	// Debug: Print what we're using
+	fmt.printf("[DEBUG] Linear: input=%s(%v), weight=%s(%v), bias=%s(%v)\n", 
+		input_name, input, weight_name, weight, bias_name, bias)
+	
 	// Get shapes from metadata
 	weight_meta := executor.graph.tensor_values[weight_name]
 	out_features := weight_meta.sizes[0].as_int
 	in_features := weight_meta.sizes[1].as_int
+	
+	fmt.printf("[DEBUG] Linear shapes: out_features=%d, in_features=%d\n", out_features, in_features)
 	
 	// Allocate output
 	output := make([]f32, out_features)
@@ -181,6 +187,8 @@ execute_linear :: proc(executor: ^Graph_Executor, node: ^Graph_Node) -> bool {
 		}
 		output[i] = sum
 	}
+	
+	fmt.printf("[DEBUG] Linear output: %v\n", output)
 	
 	executor.tensors[output_name] = output
 	return true

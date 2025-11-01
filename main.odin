@@ -12,8 +12,11 @@ main :: proc() {
     time.stopwatch_stop(&sw)
     fmt.println("Duration:", time.stopwatch_duration(sw))
 
-	// Demo: Load and execute PyTorch model
-	demo_graph_executor()
+	// Demo: Load and execute PyTorch model using full JSON parser
+	test_loaded_model()
+
+	// Demo: Manual graph executor (original demo)
+	// demo_graph_executor()
 
 	// 2D array (fixed size)
 	tensor_fixed: [3][4]f32 = {
@@ -28,38 +31,6 @@ main :: proc() {
 		fmt.println("Row", i, ":", row)
 	}
     fmt.println("Element [1][2]:", tensor_fixed[1][2])
-
-
-    //TODO check functionality of load save
-    //TODO we should be compatible with something like ONNX or pytorch
-    save_tensor :: proc(path: string, tensor: ^matrix[$R, $C]$T) -> (ok: bool) {
-        handle, err := os.open(path, os.O_CREATE | os.O_WRONLY | os.O_TRUNC, 0o644)
-        if err != os.ERROR_NONE {
-            return false
-        }
-        defer os.close(handle)
-
-        bytes := mem.ptr_to_bytes(tensor)
-        _, write_err := os.write(handle, bytes)
-        return write_err == os.ERROR_NONE
-    }
-
-    load_tensor :: proc(path: string, tensor: ^matrix[$R, $C]$T) -> (ok: bool) {
-        data, read_ok := os.read_entire_file(path)
-        if !read_ok {
-            return false
-        }
-        defer delete(data)
-
-        expected_size := size_of(matrix[R, C]T)
-        if len(data) != expected_size {
-            fmt.println("File size mismatch: expected", expected_size, "got", len(data))
-            return false
-        }
-
-        mem.copy(tensor, raw_data(data), expected_size)
-        return true
-    }
 
     linear := linear_init(15, 25)
     defer linear_destroy(&linear)
