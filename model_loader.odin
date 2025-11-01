@@ -25,6 +25,9 @@ load_pytorch_model_full :: proc(model_dir: string, allocator := context.allocato
 		fmt.printf("Failed to parse model.json: %v\n", parse_err)
 		return {}, {}, false
 	}
+    for &n in model.graph_module.graph.nodes {
+        n.operation = parse_operation(n.target)
+    }
 	
 	// Load weights from binary files
 	loaded_weights, weights_ok := load_weights_from_dir(model_dir)

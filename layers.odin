@@ -1,5 +1,92 @@
 package main
 
+import "core:fmt"
+
+// Broadcasting operation type
+Broadcast_Op :: enum {
+    Add,
+    Mul,
+    Sub,
+    Div,
+}
+
+// Apply binary operation with broadcasting from smaller to larger
+// Precondition: len(larger) >= len(smaller)
+broadcast_op_larger_smaller :: proc(larger, smaller: []f32, output: []f32, op: Broadcast_Op) {
+    assert(len(output) == len(larger), "Output must match larger input size")
+    assert(len(larger) >= len(smaller), "First argument must be larger or equal")
+    
+    larger_len := len(larger)
+    smaller_len := len(smaller)
+    
+    if smaller_len == larger_len {
+        // Same size: element-wise operation
+        for i in 0..<larger_len {
+            output[i] = apply_op(larger[i], smaller[i], op)
+        }
+    } else if smaller_len == 1 {
+        // Broadcast scalar to all elements
+        scalar := smaller[0]
+        for i in 0..<larger_len {
+            output[i] = apply_op(larger[i], scalar, op)
+        }
+    } else if larger_len % smaller_len == 0 {
+        // Broadcast with repetition
+        // E.g., smaller=[a, b] larger=[x1, x2, x3, x4] -> [op(x1,a), op(x2,b), op(x3,a), op(x4,b)]
+        for i in 0..<larger_len {
+            output[i] = apply_op(larger[i], smaller[i % smaller_len], op)
+        }
+    } else {
+        panic("Incompatible broadcasting shapes")
+    }
+}
+
+// Apply binary operation with broadcasting from smaller to larger (reversed operands)
+// Precondition: len(smaller) <= len(larger)
+broadcast_op_smaller_larger :: proc(smaller, larger: []f32, output: []f32, op: Broadcast_Op) {
+    assert(len(output) == len(larger), "Output must match larger input size")
+    assert(len(smaller) <= len(larger), "First argument must be smaller or equal")
+    
+    // Just swap the operands when calling apply_op
+    larger_len := len(larger)
+    smaller_len := len(smaller)
+    
+    if smaller_len == larger_len {
+        // Same size: element-wise operation
+        for i in 0..<larger_len {
+            output[i] = apply_op(smaller[i], larger[i], op)
+        }
+    } else if smaller_len == 1 {
+        // Broadcast scalar to all elements
+        scalar := smaller[0]
+        for i in 0..<larger_len {
+            output[i] = apply_op(scalar, larger[i], op)
+        }
+    } else if larger_len % smaller_len == 0 {
+        // Broadcast with repetition
+        for i in 0..<larger_len {
+            output[i] = apply_op(smaller[i % smaller_len], larger[i], op)
+        }
+    } else {
+        panic("Incompatible broadcasting shapes")
+    }
+}
+
+// Apply a binary operation to two scalars
+apply_op :: proc(a, b: f32, op: Broadcast_Op) -> f32 {
+    switch op {
+    case .Add:
+        return a + b
+    case .Mul:
+        return a * b
+    case .Sub:
+        return a - b
+    case .Div:
+        return a / b
+    }
+    return 0
+}
+
 // Linear layer like PyTorch - using slices for flexible sizes
 Linear :: struct {
     in_features:  int,
@@ -13,10 +100,20 @@ ReLU :: struct {
     // No parameters needed
 }
 
+// Add layer - element-wise addition
+Add :: struct {
+}
+
+Arange :: struct { // this is default, so only keeps end value
+    end: int, //TODO datatypes
+}
+
 // Union type for all layer types
 Layer :: union {
     Linear,
     ReLU,
+    Add,
+    Arange
 }
 
 // Create a new Linear layer with given dimensions and weight/bias data
@@ -27,24 +124,6 @@ linear_create :: proc(in_features, out_features: int, weight, bias: []f32) -> Li
         weight = weight,
         bias = bias,
     }
-}
-
-// Create a new Linear layer with random initialization
-linear_init :: proc(in_features, out_features: int) -> Linear {
-    layer: Linear
-    layer.in_features = in_features
-    layer.out_features = out_features
-
-    // Allocate weight and bias
-    layer.weight = make([]f32, out_features * in_features)
-    layer.bias = make([]f32, out_features)
-
-    // Initialize weights to zeros (you could use random init here)
-    for i in 0..<len(layer.weight) {
-        layer.weight[i] = 0.1  // Simple init
-    }
-
-    return layer
 }
 
 // Free the layer's memory
@@ -69,11 +148,33 @@ linear_forward :: proc(layer: ^Linear, input: []f32, output: []f32) {
     }
 }
 
-// Convenience wrapper that allocates output
-linear_forward_alloc :: proc(layer: ^Linear, input: []f32) -> []f32 {
-    output := make([]f32, layer.out_features)
-    linear_forward(layer, input, output)
-    return output
+arange_create :: proc(val: int) -> Arange{
+    return Arange{end=val}
+}
+
+arange_forward :: proc(output: []f32) {
+    for i in 0..<len(output){
+        output[i] = cast(f32)i
+    }
+}
+
+add_forward :: proc(inp: []f32, other: []f32, output: []f32) {
+    // Use broadcasting utility function
+    input_len := len(inp)
+    other_len := len(other)
+    
+    if input_len >= other_len {
+        // inp is larger or equal, broadcast other to inp's shape
+        broadcast_op_larger_smaller(inp, other, output, .Add)
+    } else {
+        // other is larger, broadcast inp to other's shape
+        broadcast_op_smaller_larger(inp, other, output, .Add)
+    }
+}
+
+// Create Add layer with a tensor value
+add_create:: proc() -> Add {
+    return Add{}
 }
 
 // Create ReLU layer (no initialization needed)
@@ -82,28 +183,11 @@ relu_create :: proc() -> ReLU {
 }
 
 // ReLU forward pass: output = max(0, input)
-relu_forward :: proc(layer: ^ReLU, input: []f32, output: []f32) {
+relu_forward :: proc(input: []f32, output: []f32) {
     assert(len(input) == len(output), "Input and output size mismatch")
     
     for i in 0..<len(input) {
         output[i] = max(0, input[i])
-    }
-}
-
-// Convenience wrapper that allocates output
-relu_forward_alloc :: proc(layer: ^ReLU, input: []f32) -> []f32 {
-    output := make([]f32, len(input))
-    relu_forward(layer, input, output)
-    return output
-}
-
-// Generic layer forward pass - dispatches to the correct implementation
-layer_forward :: proc(layer: ^Layer, input: []f32, output: []f32) {
-    switch &l in layer {
-    case Linear:
-        linear_forward(&l, input, output)
-    case ReLU:
-        relu_forward(&l, input, output)
     }
 }
 
@@ -113,6 +197,10 @@ layer_destroy :: proc(layer: ^Layer) {
     case Linear:
         linear_destroy(&l)
     case ReLU:
+        // Nothing to destroy for ReLU
+    case Arange:
+        // Nothing to destroy for ReLU
+    case Add:
         // Nothing to destroy for ReLU
     }
 }

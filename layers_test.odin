@@ -1,0 +1,167 @@
+package main
+
+import "core:testing"
+import "core:fmt"
+
+// Test Linear layer forward pass
+@(test)
+test_linear_forward :: proc(t: ^testing.T) {
+	// Setup
+	weight := []f32{0.5, -0.5}  // 2x1 matrix
+	bias := []f32{1.0, 2.0}
+	layer := linear_create(1, 2, weight, bias)
+	
+	input := []f32{2.0}
+	output := make([]f32, 2)
+	defer delete(output)
+	
+	// Execute
+	linear_forward(&layer, input, output)
+	
+	// Assert: output = [2.0 * 0.5 + 1.0, 2.0 * -0.5 + 2.0] = [2.0, 1.0]
+	testing.expect_value(t, output[0], 2.0)
+	testing.expect_value(t, output[1], 1.0)
+}
+
+// Test ReLU activation
+@(test)
+test_relu_forward :: proc(t: ^testing.T) {
+	input := []f32{-1.0, 0.0, 1.0, -5.0, 3.0}
+	output := make([]f32, len(input))
+	defer delete(output)
+	
+	relu_forward(input, output)
+	
+	testing.expect_value(t, output[0], 0.0)  // max(0, -1) = 0
+	testing.expect_value(t, output[1], 0.0)  // max(0, 0) = 0
+	testing.expect_value(t, output[2], 1.0)  // max(0, 1) = 1
+	testing.expect_value(t, output[3], 0.0)  // max(0, -5) = 0
+	testing.expect_value(t, output[4], 3.0)  // max(0, 3) = 3
+}
+
+// Test Add layer with scalar (stored as single-element tensor)
+@(test)
+test_add_scalar :: proc(t: ^testing.T) {
+	input := []f32{1.0, 2.0, 3.0}
+	input_2 := []f32{5.0}
+	output := make([]f32, len(input))
+	defer delete(output)
+	
+	add_forward(input, input_2, output)
+	
+	// Broadcasting: single value to all elements
+	testing.expect_value(t, output[0], 6.0)
+	testing.expect_value(t, output[1], 7.0)
+	testing.expect_value(t, output[2], 8.0)
+}
+
+// Test Add layer with tensor (same size)
+@(test)
+test_add_tensor_same_size :: proc(t: ^testing.T) {
+	input := []f32{1.0, 2.0, 3.0}
+	input_2 := []f32{10.0, 20.0, 30.0}
+	output := make([]f32, len(input))
+	defer delete(output)
+	
+	add_forward(input, input_2, output)
+	
+	testing.expect_value(t, output[0], 11.0)
+	testing.expect_value(t, output[1], 22.0)
+	testing.expect_value(t, output[2], 33.0)
+}
+
+// Test Add layer broadcasting
+@(test)
+test_add_broadcast :: proc(t: ^testing.T) {
+	input := []f32{1.0, 2.0, 3.0, 4.0}  // Length 4, will broadcast [100, 200] twice
+	input_2 := []f32{100.0, 200.0}
+	output := make([]f32, len(input))
+	defer delete(output)
+	
+	add_forward(input, input_2, output)
+	
+	testing.expect_value(t, output[0], 101.0)  // 1 + 100
+	testing.expect_value(t, output[1], 202.0)  // 2 + 200
+	testing.expect_value(t, output[2], 103.0)  // 3 + 100
+	testing.expect_value(t, output[3], 204.0)  // 4 + 200
+}
+
+// Test layer destroy
+@(test)
+test_layer_destroy :: proc(t: ^testing.T) {
+	// Test Linear destroy
+	weight := make([]f32, 4)
+	bias := make([]f32, 2)
+	linear_layer := linear_create(2, 2, weight, bias)
+	layer: Layer = linear_layer
+	layer_destroy(&layer)
+	// If no crash/leak, test passes
+	
+	// Test Add destroy
+	add_layer := Add{value = make([]f32, 1)}
+	layer2: Layer = add_layer
+	layer_destroy(&layer2)
+	// If no crash/leak, test passes
+}
+
+// Test broadcasting: larger + smaller
+@(test)
+test_broadcast_larger_smaller :: proc(t: ^testing.T) {
+	larger := []f32{1.0, 2.0, 3.0, 4.0}
+	smaller := []f32{10.0, 20.0}
+	output := make([]f32, len(larger))
+	defer delete(output)
+	
+	broadcast_op_larger_smaller(larger, smaller, output, .Add)
+	
+	testing.expect_value(t, output[0], 11.0)  // 1 + 10
+	testing.expect_value(t, output[1], 22.0)  // 2 + 20
+	testing.expect_value(t, output[2], 13.0)  // 3 + 10
+	testing.expect_value(t, output[3], 24.0)  // 4 + 20
+}
+
+// Test broadcasting: smaller + larger
+@(test)
+test_broadcast_smaller_larger :: proc(t: ^testing.T) {
+	smaller := []f32{100.0}
+	larger := []f32{1.0, 2.0, 3.0}
+	output := make([]f32, len(larger))
+	defer delete(output)
+	
+	broadcast_op_smaller_larger(smaller, larger, output, .Add)
+	
+	testing.expect_value(t, output[0], 101.0)  // 100 + 1
+	testing.expect_value(t, output[1], 102.0)  // 100 + 2
+	testing.expect_value(t, output[2], 103.0)  // 100 + 3
+}
+
+// Test broadcasting with multiplication
+@(test)
+test_broadcast_mul :: proc(t: ^testing.T) {
+	larger := []f32{2.0, 3.0, 4.0, 5.0}
+	smaller := []f32{10.0}
+	output := make([]f32, len(larger))
+	defer delete(output)
+	
+	broadcast_op_larger_smaller(larger, smaller, output, .Mul)
+	
+	testing.expect_value(t, output[0], 20.0)   // 2 * 10
+	testing.expect_value(t, output[1], 30.0)   // 3 * 10
+	testing.expect_value(t, output[2], 40.0)   // 4 * 10
+	testing.expect_value(t, output[3], 50.0)   // 5 * 10
+}
+
+@(test)
+test_broadcast_subshape :: proc(t: ^testing.T) {
+    larger := []f32{2.0, 3.0, 4.0, 5.0}
+    smaller := []f32{10.0, 3.0}
+    output := make([]f32, len(larger))
+    defer delete(output)
+
+    broadcast_op_larger_smaller(larger, smaller, output, .Mul)
+
+    testing.expect_value(t, output[0], 20.0)   // 2 * 10
+    testing.expect_value(t, output[1], 9.0)   // 3 * 3
+    testing.expect_value(t, output[2], 40.0)   // 4 * 10
+    testing.expect_value(t, output[3], 15.0)   // 5 * 3
+}

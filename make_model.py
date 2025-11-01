@@ -10,8 +10,8 @@ class Net(nn.Module):
         self.fc2 = nn.Linear(4, 1)
 
     def forward(self, x):
-        x = self.fc1(x) # 8x1 -> 8x1
-        x = self.fc2(x) # 8x1 -> 8x1
+        x = self.fc1(x) + torch.arange(4, dtype=torch.float32) # 8x1 -> 8x1
+        x = self.fc2(x)  # 8x1 -> 8x1
         return F.relu(x)
 model = Net()
 

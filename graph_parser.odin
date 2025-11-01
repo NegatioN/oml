@@ -17,30 +17,61 @@ Graph_Module :: struct {
 }
 
 Graph :: struct {
-	inputs: []Tensor_Arg,
-	outputs: []Tensor_Arg,
+	inputs: []Node_Arg,
+	outputs: []Node_Arg,
 	nodes: []Graph_Node,
 	tensor_values: map[string]Tensor_Meta,
 }
 
-Tensor_Arg :: struct {
+// Unified argument structure that can hold different types
+// JSON will populate whichever field is present
+Node_Arg :: struct {
 	as_tensor: Maybe(Tensor_Name),
+	as_int:    Maybe(int),
+	as_float:  Maybe(f32),
+	as_bool:   Maybe(bool),
+	as_string: Maybe(string),
 }
 
 Tensor_Name :: struct {
-	name: string,
+    name: string,
+}
+
+Node_Operation :: enum {
+    Linear, ReLU, Add, Arange, Unknown,
+}
+
+parse_operation :: proc(target: string) -> Node_Operation {
+    /*
+    Other relevant operators:
+    torch.ops.aten.to.dtype
+
+    */
+    switch target {
+    case "torch.ops.aten.linear.default":
+        return .Linear
+    case "torch.ops.aten.relu.default":
+        return .ReLU
+    case "torch.ops.aten.add.Tensor":
+        return .Add
+    case "torch.ops.aten.arange.default":
+        return .Arange
+    case:
+        return .Unknown
+    }
 }
 
 Graph_Node :: struct {
 	target: string,  // e.g., "torch.ops.aten.linear.default"
+    operation: Node_Operation,
 	inputs: []Node_Input,
-	outputs: []Tensor_Arg,
+	outputs: []Node_Arg,
 	metadata: Maybe(Node_Metadata),
 }
 
 Node_Input :: struct {
 	name: string,
-	arg: Tensor_Arg,
+	arg: Node_Arg,
 	kind: int,
 }
 
@@ -85,7 +116,7 @@ Parameter_Info :: struct {
 }
 
 User_Input_Info :: struct {
-	arg: Tensor_Arg,
+	arg: Node_Arg,
 }
 
 Output_Spec :: struct {
@@ -93,7 +124,7 @@ Output_Spec :: struct {
 }
 
 User_Output_Info :: struct {
-	arg: Tensor_Arg,
+	arg: Node_Arg,
 }
 
 Schema_Version :: struct {
@@ -116,8 +147,8 @@ build_layers_from_graph :: proc(graph: ^Graph, weights: map[string][]f32) -> []L
 	for &node in graph.nodes {
 		layer: Layer
 		
-		switch node.target {
-		case "torch.ops.aten.linear.default":
+		switch node.operation {
+		case Node_Operation.Linear:
 			// Extract layer parameters
 			weight_name := node.inputs[1].arg.as_tensor.?.name
 			bias_name := node.inputs[2].arg.as_tensor.?.name
@@ -131,15 +162,22 @@ build_layers_from_graph :: proc(graph: ^Graph, weights: map[string][]f32) -> []L
 			in_features := weight_meta.sizes[1].as_int
 			
 			// Create Linear layer
-			linear_layer := linear_create(in_features, out_features, weight, bias)
-			layer = linear_layer
-			
-		case "torch.ops.aten.relu.default":
-			// Create ReLU layer (stateless)
-			relu_layer := relu_create()
-			layer = relu_layer
-			
-		case:
+			layer = linear_create(in_features, out_features, weight, bias)
+
+		case Node_Operation.ReLU:
+			layer := relu_create()
+
+        case Node_Operation.Add:
+            fmt.println("%v", node)
+            weight_name := node.inputs[1].arg.as_tensor.?.name  //TODO if we add the value manually here as an int, the fetching is different.
+
+            layer = add_create()
+
+        case Node_Operation.Arange:
+            end := node.inputs[0].arg.as_int.?
+            layer = arange_create(end)
+		case Node_Operation.Unknown:
+            fmt.printf("Unsupported operation: %s\n", node.target)
 			// Unknown layer type - could log warning
 			continue
 		}
@@ -164,6 +202,7 @@ execute_graph :: proc(executor: ^Graph_Executor, input: []f32) -> (output: []f32
 	
 	// Execute each node and its corresponding layer in order
 	for &node, i in executor.graph.nodes {
+        //fmt.printf("%v %v\n\n", i, &node)
 		execute_node(executor, &node, &executor.layers[i]) or_return
 	}
 	
@@ -187,15 +226,20 @@ execute_graph :: proc(executor: ^Graph_Executor, input: []f32) -> (output: []f32
 
 // Execute a single node with its pre-built layer
 execute_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^Layer) -> bool {
-	switch node.target {
-	case "torch.ops.aten.linear.default":
+	switch node.operation {
+	case Node_Operation.Linear:
 		return execute_linear_node(executor, node, layer)
-	case "torch.ops.aten.relu.default":
+	case Node_Operation.ReLU:
 		return execute_relu_node(executor, node, layer)
-	case:
+    case Node_Operation.Add:
+        return execute_add_node(executor, node, layer)
+    case Node_Operation.Arange:
+        return execute_arange_node(executor, node, layer)
+	case Node_Operation.Unknown:
 		fmt.printf("Unsupported operation: %s\n", node.target)
 		return false
 	}
+    return true // :thinking:
 }
 
 // Execute linear node using pre-built Linear layer
@@ -222,24 +266,66 @@ execute_linear_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer:
 
 // Execute ReLU node using pre-built ReLU layer
 execute_relu_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^Layer) -> bool {
-	relu_layer := layer.(ReLU) or_return
-	
 	// Get input and output names
 	input_name := node.inputs[0].arg.as_tensor.?.name
 	output_name := node.outputs[0].as_tensor.?.name
-	
+
 	// Fetch input tensor
 	input := executor.tensors[input_name]
-	
+
 	// Allocate output
 	output := make([]f32, len(input))
-	
+
 	// Execute the layer
-	relu_forward(&relu_layer, input, output)
-	
+	relu_forward(input, output)
+
 	// Store result
 	executor.tensors[output_name] = output
 	return true
+}
+
+execute_add_node:: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^Layer) -> bool {
+    add_layer := layer.(Add) or_return
+
+    // Get input and output names
+    input_name := node.inputs[0].arg.as_tensor.?.name
+    input_name_2 := node.inputs[1].arg.as_tensor.?.name
+    output_name := node.outputs[0].as_tensor.?.name
+
+    // Fetch input tensor
+    //TODO how to decide if we need a weight or a tensor from executor?
+    input := executor.tensors[input_name]
+    input_2 := executor.tensors[input_name_2]
+    o_size := len(input) if len(input) > len(input_2) else len(input_2)
+
+    // Allocate output
+    output := make([]f32, o_size)
+
+    // Execute the layer
+    add_forward(input, input_2, output)
+
+    // Store result
+    executor.tensors[output_name] = output
+    return true
+}
+
+execute_arange_node:: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^Layer) -> bool {
+    arange_layer := layer.(Arange) or_return
+
+    // Get input and output names
+    output_name := node.outputs[0].as_tensor.?.name
+
+    // Allocate output
+    output := make([]f32, arange_layer.end)
+
+    for i in 0..<len(output){
+        output[i] = cast(f32)i
+    }
+    //arange_forward(output)
+
+    // Store result
+    executor.tensors[output_name] = output
+    return true
 }
 
 // Print graph summary
