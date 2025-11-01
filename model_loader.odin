@@ -99,13 +99,14 @@ load_weights_from_dir :: proc(model_dir: string, allocator := context.allocator)
 }
 
 // Create executor from loaded model
-create_executor_from_model :: proc(model: ^Graph_Model, weights: map[string][]f32) -> Graph_Executor {
-	// Remap weights using the signature
-	// PyTorch exports use parameter names like "fc1.weight"
-	// but the graph uses names like "p_fc1_weight"
+create_executor_from_model :: proc(model: ^Graph_Model, weights: map[string][]f32, model_dir: string) -> Graph_Executor {
+	// Remap weights and constants using the signature
+	// PyTorch exports use parameter names like "fc1.weight" and constant names like "data"
+	// but the graph uses names like "p_fc1_weight" and "c_data"
 	remapped_weights := make(map[string][]f32)
 	
 	for input_spec in model.graph_module.signature.input_specs {
+		// Handle parameters (weights/biases)
 		if param, ok := input_spec.parameter.?; ok {
 			param_name := param.parameter_name
 			graph_name := param.arg.name
@@ -119,12 +120,38 @@ create_executor_from_model :: proc(model: ^Graph_Model, weights: map[string][]f3
 		}
 	}
 	
+	// Build all constants (file-based + inline scalars) from graph
+	all_constants, _ := build_constants_from_graph(&model.graph_module.graph, model_dir)
+	
+	// Remap file-based constants using signature
+	remapped_constants := make(map[string][]f32)
+	for input_spec in model.graph_module.signature.input_specs {
+		if const_info, ok := input_spec.tensor_constant.?; ok {
+			const_name := const_info.tensor_constant_name
+			graph_name := const_info.arg.name
+			
+			// Check if this constant was loaded
+			if const_data, found := all_constants[const_name]; found {
+				remapped_constants[graph_name] = const_data
+				delete_key(&all_constants, const_name) // Remove from all_constants to avoid double-free
+				fmt.printf("Remapped constant: %s -> %s\n", const_name, graph_name)
+			}
+		}
+	}
+	
+	// Add any remaining constants (inline scalars, etc.) that don't need remapping
+	for name, data in all_constants {
+		remapped_constants[name] = data
+	}
+	delete(all_constants)
+	
 	// Build layers from graph nodes
 	layers := build_layers_from_graph(&model.graph_module.graph, remapped_weights)
 	
 	executor := Graph_Executor{
 		graph = &model.graph_module.graph,
 		weights = remapped_weights,
+		constants = remapped_constants,
 		tensors = make(map[string][]f32),
 		layers = layers,
 	}
@@ -153,15 +180,17 @@ test_loaded_model :: proc() {
 	// Print graph info
 	print_graph_summary(&model.graph_module.graph)
 	
-	// Create executor
-	executor := create_executor_from_model(&model, weights)
+	// Create executor with constants
+	executor := create_executor_from_model(&model, weights, "model")
 	defer {
 		for _, t in executor.tensors do delete(t)
 		delete(executor.tensors)
+		for _, c in executor.constants do delete(c)
+		delete(executor.constants)
 		for &layer in executor.layers do layer_destroy(&layer)
 		delete(executor.layers)
 	}
-	
+	fmt.printf("Schema version: %d.%d\n", model.schema_version.major, model.schema_version.minor)
 	// Test inference
 	fmt.println("\n=== Running Inference with Loaded Model ===")
 	test_inputs := [][]f32{

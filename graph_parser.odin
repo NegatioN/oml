@@ -1,6 +1,8 @@
 package main
 
 import "core:fmt"
+import "core:os"
+import "core:encoding/json"
 
 // PyTorch Graph structures for parsing model.json
 
@@ -35,6 +37,66 @@ Node_Arg :: struct {
 
 Tensor_Name :: struct {
     name: string,
+}
+
+// Generate a unique name for a Node_Arg based on its content
+// For scalars: "as_int_5", "as_float_3.14"
+// For tensors: returns the tensor name directly
+node_arg_to_name :: proc(arg: Node_Arg, allocator := context.allocator) -> (name: string, ok: bool) {
+	context.allocator = allocator
+	
+	// If it's a tensor reference, return the tensor name
+	if tensor_name, has_tensor := arg.as_tensor.?; has_tensor {
+		return tensor_name.name, true
+	}
+	
+	// If it's an integer, generate "as_int_VALUE"
+	if int_val, has_int := arg.as_int.?; has_int {
+		return fmt.tprintf("as_int_%d", int_val), true
+	}
+	
+	// If it's a float, generate "as_float_VALUE"
+	if float_val, has_float := arg.as_float.?; has_float {
+		return fmt.tprintf("as_float_%v", float_val), true
+	}
+	
+	// If it's a bool, generate "as_bool_true" or "as_bool_false"
+	if bool_val, has_bool := arg.as_bool.?; has_bool {
+		return fmt.tprintf("as_bool_%v", bool_val), true
+	}
+	
+	// If it's a string, generate "as_string_VALUE"
+	if str_val, has_string := arg.as_string.?; has_string {
+		return fmt.tprintf("as_string_%s", str_val), true
+	}
+	
+	// Unknown type
+	return "", false
+}
+
+// Helper to get tensor data from a Node_Arg
+// Returns the tensor from executor if it's a tensor reference,
+// or creates a single-element array for scalar values
+get_tensor_from_arg :: proc(arg: Node_Arg, executor: ^Graph_Executor, allocator := context.allocator) -> (tensor: []f32, ok: bool) {
+    fmt.println(executor.constants)
+    fmt.println(arg)
+	context.allocator = allocator
+	
+	// Check if it's a tensor reference
+
+	if tensor_name, has_tensor := node_arg_to_name(arg); has_tensor {
+		// Look up tensor in executor's runtime tensors, constants, or weights
+		if t, found := executor.tensors[tensor_name]; found {
+			return t, true
+		}
+		if c, found := executor.constants[tensor_name]; found {
+			return c, true
+		}
+		if w, found := executor.weights[tensor_name]; found {
+			return w, true
+		}
+	}
+	return nil, false
 }
 
 Node_Operation :: enum {
@@ -107,12 +169,18 @@ Signature :: struct {
 
 Input_Spec :: struct {
 	parameter: Maybe(Parameter_Info),
+	tensor_constant: Maybe(Tensor_Constant_Info),
 	user_input: Maybe(User_Input_Info),
 }
 
 Parameter_Info :: struct {
 	arg: Tensor_Name,
 	parameter_name: string,
+}
+
+Tensor_Constant_Info :: struct {
+	arg: Tensor_Name,
+	tensor_constant_name: string,
 }
 
 User_Input_Info :: struct {
@@ -135,9 +203,90 @@ Schema_Version :: struct {
 // Graph execution context
 Graph_Executor :: struct {
 	graph: ^Graph,
-	weights: map[string][]f32,
-	tensors: map[string][]f32,  // Runtime tensor values
-	layers: []Layer,             // Pre-built layers in execution order
+	weights: map[string][]f32,       // Pre-loaded model weights
+	constants: map[string][]f32,     // Pre-loaded constant tensors (from files + inline scalars)
+	tensors: map[string][]f32,       // Runtime tensor values
+	layers: []Layer,                 // Pre-built layers in execution order
+}
+
+// Build constants map from file-based constants and inline scalars in the graph
+build_constants_from_graph :: proc(graph: ^Graph, model_dir: string) -> (constants: map[string][]f32, ok: bool) {
+	constants = make(map[string][]f32)
+	
+	// 1. Load file-based constants from model/data/constants/
+	constants_config_path := fmt.tprintf("%s/data/constants/model_constants_config.json", model_dir)
+	if config_data, read_ok := os.read_entire_file(constants_config_path); read_ok {
+		defer delete(config_data)
+		
+		// Parse constants config (similar structure to weights config)
+		Constants_Config_Root :: struct {
+			config: map[string]Weight_Config,
+		}
+		
+		Weight_Config :: struct {
+			path_name:   string,
+			is_param:    bool,
+			use_pickle:  bool,
+			tensor_meta: Tensor_Meta,
+		}
+		
+		config: Constants_Config_Root
+		parse_err := json.unmarshal(config_data, &config)
+		if parse_err == nil {
+			defer delete(config.config)
+			
+			// Load each constant file
+			for const_name, const_info in config.config {
+				const_path := fmt.tprintf("%s/data/constants/%s", model_dir, const_info.path_name)
+				const_data, c_ok := os.read_entire_file(const_path)
+				if c_ok {
+					defer delete(const_data)
+					
+					// Convert bytes to floats
+					num_floats := len(const_data) / size_of(f32)
+					const_floats := transmute([]f32)const_data
+					
+					constants[const_name] = make([]f32, num_floats)
+					copy(constants[const_name], const_floats[:num_floats])
+					
+					fmt.printf("Loaded constant %s: %v floats\n", const_name, num_floats)
+				}
+			}
+		}
+	}
+	
+	// 2. Extract inline scalar constants from graph nodes
+	for &node, node_idx in graph.nodes {
+		for &input, input_idx in node.inputs {
+			// Generate a name for this argument if it's a scalar
+			arg_name, name_ok := node_arg_to_name(input.arg)
+			if !name_ok do continue
+			
+			// Skip if it's a tensor reference (already handled elsewhere)
+			if input.arg.as_tensor != nil do continue
+			
+			// Extract scalar value
+			scalar_value: Maybe(f32)
+			
+			if int_val, has_int := input.arg.as_int.?; has_int {
+				scalar_value = f32(int_val)
+			} else if float_val, has_float := input.arg.as_float.?; has_float {
+				scalar_value = float_val
+			}
+			
+			// If we found a scalar, store it with the generated name
+			if val, has_scalar := scalar_value.?; has_scalar {
+				// Only add if not already present (avoid duplicates)
+				if arg_name not_in constants {
+					scalar_array := make([]f32, 1)
+					scalar_array[0] = val
+					constants[arg_name] = scalar_array
+				}
+			}
+		}
+	}
+	
+	return constants, true
 }
 
 // Build layers from graph nodes during initialization
@@ -168,9 +317,7 @@ build_layers_from_graph :: proc(graph: ^Graph, weights: map[string][]f32) -> []L
 			layer := relu_create()
 
         case Node_Operation.Add:
-            fmt.println("%v", node)
-            weight_name := node.inputs[1].arg.as_tensor.?.name  //TODO if we add the value manually here as an int, the fetching is different.
-
+            //weight_name := node.inputs[1].arg.as_tensor.?.name  //TODO if we add the value manually here as an int, the fetching is different.
             layer = add_create()
 
         case Node_Operation.Arange:
@@ -195,15 +342,18 @@ execute_graph :: proc(executor: ^Graph_Executor, input: []f32) -> (output: []f32
 		delete(executor.tensors[key])
 	}
 	clear(&executor.tensors)
-	
+
+    //TODO we cant assume that the input is called x forever
 	// Set input tensor (assuming single input named 'x')
 	executor.tensors["x"] = make([]f32, len(input))
 	copy(executor.tensors["x"], input)
-	
+
+    it := soa_zip(node=executor.graph.nodes, layer=executor.layers)
 	// Execute each node and its corresponding layer in order
-	for &node, i in executor.graph.nodes {
-        //fmt.printf("%v %v\n\n", i, &node)
-		execute_node(executor, &node, &executor.layers[i]) or_return
+    //TODO the graph might not be so easy to execute in order when the model is more complex?
+    for &el, i  in it {
+        //fmt.printf("%v %v\n\n", i, &el.node) //Debuglog
+		execute_node(executor, &el.node, &el.layer) or_return
 	}
 	
 	// Get output tensor (assuming single output)
@@ -284,29 +434,32 @@ execute_relu_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^
 	return true
 }
 
-execute_add_node:: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^Layer) -> bool {
-    add_layer := layer.(Add) or_return
+execute_add_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^Layer) -> bool {
+	// Get input tensors using helper function
+	input_1, ok1 := get_tensor_from_arg(node.inputs[0].arg, executor)
+	if !ok1 {
+		fmt.println("Failed to get first input for add operation")
+		return false
+	}
 
-    // Get input and output names
-    input_name := node.inputs[0].arg.as_tensor.?.name
-    input_name_2 := node.inputs[1].arg.as_tensor.?.name
-    output_name := node.outputs[0].as_tensor.?.name
+	input_2,  ok2 := get_tensor_from_arg(node.inputs[1].arg, executor)
+	if !ok2 {
+		fmt.println("Failed to get second input for add operation")
+		return false
+	}
 
-    // Fetch input tensor
-    //TODO how to decide if we need a weight or a tensor from executor?
-    input := executor.tensors[input_name]
-    input_2 := executor.tensors[input_name_2]
-    o_size := len(input) if len(input) > len(input_2) else len(input_2)
-
-    // Allocate output
-    output := make([]f32, o_size)
-
-    // Execute the layer
-    add_forward(input, input_2, output)
-
-    // Store result
-    executor.tensors[output_name] = output
-    return true
+	// Determine output size (larger of the two inputs)
+	output_size := max(len(input_1), len(input_2))
+	output := make([]f32, output_size)
+	
+	// Execute add operation
+	add_forward(input_1, input_2, output)
+	
+	// Store result
+	output_name := node.outputs[0].as_tensor.?.name
+	executor.tensors[output_name] = output
+	
+	return true
 }
 
 execute_arange_node:: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^Layer) -> bool {

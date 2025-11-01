@@ -8,9 +8,10 @@ class Net(nn.Module):
         super(Net, self).__init__()
         self.fc1 = nn.Linear(1, 4)
         self.fc2 = nn.Linear(4, 1)
+        self.data = torch.tensor([4,3,2,1], dtype=torch.float32)
 
     def forward(self, x):
-        x = self.fc1(x) + torch.arange(4, dtype=torch.float32) # 8x1 -> 8x1
+        x = self.fc1(x) + 10 #torch.arange(4, dtype=torch.float32) # 8x1 -> 8x1
         x = self.fc2(x)  # 8x1 -> 8x1
         return F.relu(x)
 model = Net()
