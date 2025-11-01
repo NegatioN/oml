@@ -29,6 +29,7 @@ Graph :: struct {
 // JSON will populate whichever field is present
 Node_Arg :: struct {
 	as_tensor: Maybe(Tensor_Name),
+    as_tensors: Maybe([]Tensor_Name), // For now we remap this to single arguments
 	as_int:    Maybe(int),
 	as_float:  Maybe(f32),
 	as_bool:   Maybe(bool),
@@ -38,6 +39,65 @@ Node_Arg :: struct {
 Tensor_Name :: struct {
     name: string,
 }
+
+// Expand a Node_Arg with as_tensors into multiple Node_Args with as_tensor
+// This normalizes variadic inputs into a flat list of single-tensor arguments
+expand_node_inputs :: proc(inputs: []Node_Input, allocator := context.allocator) -> []Node_Input {
+	context.allocator = allocator
+	
+	expanded := make([dynamic]Node_Input)
+	
+	for input in inputs {
+		// If it has multiple tensors, expand them into separate Node_Inputs
+		if tensors, ok := input.arg.as_tensors.?; ok {
+			for tensor in tensors {
+				expanded_input := Node_Input{
+					name = input.name,
+					kind = input.kind,
+					arg = Node_Arg{
+						as_tensor = tensor,
+					},
+				}
+				append(&expanded, expanded_input)
+			}
+		} else {
+			// Keep as-is (single tensor or scalar)
+			append(&expanded, input)
+		}
+	}
+	
+	return expanded[:]
+}
+
+// Expand Node_Arg outputs with as_tensors into multiple as_tensor outputs
+expand_node_outputs :: proc(outputs: []Node_Arg, allocator := context.allocator) -> []Node_Arg {
+	context.allocator = allocator
+	
+	expanded := make([dynamic]Node_Arg)
+	
+	for output in outputs {
+		// If it has multiple tensors, expand them
+		if tensors, ok := output.as_tensors.?; ok {
+			for tensor in tensors {
+				expanded_output := Node_Arg{
+					as_tensor = tensor,
+				}
+				append(&expanded, expanded_output)
+			}
+		} else {
+			// Keep as-is
+			append(&expanded, output)
+		}
+	}
+	
+	return expanded[:]
+}
+
+// TODO: Handle variadic operations properly
+// Some operations like concat, stack, etc. need to know which inputs belong together.
+// Consider adding a variadic_group_id field or keeping track of original structure.
+// For now, expand_node_inputs/outputs flattens everything, which works for simple cases
+// but will need refinement for operations that semantically require grouped inputs.
 
 // Generate a unique name for a Node_Arg based on its content
 // For scalars: "as_int_5", "as_float_3.14"
@@ -93,19 +153,20 @@ get_tensor_from_arg :: proc(arg: Node_Arg, executor: ^Graph_Executor, allocator 
 }
 
 Node_Operation :: enum {
-    Linear, ReLU, Add, Sub, Arange, LiftFreshCopy, Detach, Unknown,
+    Linear, ReLU, Add, Sub, Arange, LiftFreshCopy, Cat, Noop, Unknown,
 }
 
 parse_operation :: proc(target: string) -> Node_Operation {
     /*
     Other relevant operators:
     torch.ops.aten.to.dtype
-
     */
     switch target {
     case "torch.ops.aten.linear.default":
         return .Linear
     case "torch.ops.aten.relu.default":
+        return .ReLU
+    case "torch.ops.aten.gelu.default": // Circle back and implement GELU
         return .ReLU
     case "torch.ops.aten.add.Tensor":
         return .Add
@@ -115,8 +176,12 @@ parse_operation :: proc(target: string) -> Node_Operation {
         return .Arange
     case "torch.ops.aten.lift_fresh_copy.default":
         return .LiftFreshCopy
+    case "torch.ops.aten.dropout.default":
+        return .Noop
     case "torch.ops.aten.detach_.default":
-        return .Detach
+        return .Noop
+    case "torch.ops.aten.cat.default":
+        return .Cat
     case:
         return .Unknown
     }
@@ -284,7 +349,7 @@ build_constants_from_graph :: proc(graph: ^Graph, model_dir: string) -> (constan
 			if !name_ok do continue
 			
 			// Skip if it's a tensor reference (already handled elsewhere)
-			if input.arg.as_tensor != nil do continue
+			if input.arg.as_tensor != nil || input.arg.as_tensors != nil do continue
 			
 			// Extract scalar value
 			scalar_value: Maybe(f32)
@@ -343,13 +408,26 @@ build_layers_from_graph :: proc(graph: ^Graph, weights: map[string][]f32) -> []L
         case Node_Operation.Add:
         case Node_Operation.Sub:
         case Node_Operation.LiftFreshCopy:
-        case Node_Operation.Detach:
+        case Node_Operation.Noop:
+        case Node_Operation.Cat:
+            // Find the 'dim' parameter in the node inputs
+            dim := 0  // Default value if not found
+            for input in node.inputs {
+                if input.name == "dim" {
+                    if dim_val, ok := input.arg.as_int.?; ok {
+                        dim = dim_val
+                    }
+                    break
+                }
+            }
+            layer = cat_create(dim)
 		case Node_Operation.Unknown:
             fmt.printf("Unsupported operation: %s\n", node.target)
 			// Unknown layer type - could log warning
 			continue
 		}
-		
+
+        //For now, always append an empty layer even if it doesnt do anything. We rely on Nodes and Layers being identical length and in order.
 		append(&layers, layer)
 	}
 	
@@ -397,21 +475,24 @@ execute_graph :: proc(executor: ^Graph_Executor, input: []f32) -> (output: []f32
 
 // Execute a single node with its pre-built layer
 execute_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^Layer) -> bool {
+    //TODO Nodes could contain their own function or something. seems like a useless switch statement.
 	switch node.operation {
 	case Node_Operation.Linear:
 		return execute_linear_node(executor, node, layer)
 	case Node_Operation.ReLU:
-		return execute_relu_node(executor, node, layer)
+		return execute_relu_node(executor, node)
     case Node_Operation.Add:
-        return execute_add_node(executor, node, layer)
+        return execute_add_node(executor, node)
     case Node_Operation.Sub:
-        return execute_sub_node(executor, node, layer)
+        return execute_sub_node(executor, node)
     case Node_Operation.Arange:
         return execute_arange_node(executor, node, layer)
     case Node_Operation.LiftFreshCopy:
         return execute_copy_node(executor, node)
-    case Node_Operation.Detach:
+    case Node_Operation.Noop:
         return execute_copy_node(executor, node)
+    case Node_Operation.Cat:
+        return execute_cat_node(executor, node, layer)
 	case Node_Operation.Unknown:
 		fmt.printf("Unsupported operation: %s\n", node.target)
 		return false
@@ -442,7 +523,7 @@ execute_linear_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer:
 }
 
 // Execute ReLU node using pre-built ReLU layer
-execute_relu_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^Layer) -> bool {
+execute_relu_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node) -> bool {
 	// Get input and output names
 	input_name := node.inputs[0].arg.as_tensor.?.name
 	output_name := node.outputs[0].as_tensor.?.name
@@ -461,7 +542,7 @@ execute_relu_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^
 	return true
 }
 
-execute_add_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^Layer) -> bool {
+execute_add_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node) -> bool {
 	input_1, ok1 := get_tensor_from_arg(node.inputs[0].arg, executor)
 	if !ok1 {
 		fmt.println("Failed to get first input for add operation")
@@ -488,7 +569,7 @@ execute_add_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^L
 	return true
 }
 
-execute_sub_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^Layer) -> bool {
+execute_sub_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node) -> bool {
     input_1, ok1 := get_tensor_from_arg(node.inputs[0].arg, executor)
     if !ok1 {
         fmt.println("Failed to get first input for add operation")
@@ -534,10 +615,37 @@ execute_arange_node:: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: 
     return true
 }
 
+execute_cat_node:: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^Layer) -> bool {
+    l := layer.(Cat) or_return
+    input_1, ok1 := get_tensor_from_arg(node.inputs[0].arg, executor)
+    if !ok1 {
+        fmt.println("Failed to get first input")
+        return false
+    }
+    input_2, ok2 := get_tensor_from_arg(node.inputs[1].arg, executor)
+    if !ok2 {
+        fmt.println("Failed to get second input")
+        return false
+    }
+    output_name := node.outputs[0].as_tensor.?.name
+    output := make([]f32, len(input_1)+len(input_2))
+    if l.dim == 0 {
+        copy(output[:len(input_1)], input_1)
+        copy(output[len(input_2):], input_2)
+    }
+    else {
+        panic("Unsupported dimension for catting")
+    }
+
+
+    executor.tensors[output_name] = output
+    return true
+}
+
 execute_copy_node:: proc(executor: ^Graph_Executor, node: ^Graph_Node) -> bool {
     input_1, ok1 := get_tensor_from_arg(node.inputs[0].arg, executor)
     if !ok1 {
-        fmt.println("Failed to get first input for add operation")
+        fmt.println("Failed to get first input")
         return false
     }
     output_name := node.outputs[0].as_tensor.?.name

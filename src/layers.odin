@@ -100,8 +100,8 @@ ReLU :: struct {
     // No parameters needed
 }
 
-// Add layer - element-wise addition
-Add :: struct {
+Cat :: struct {
+    dim: int,
 }
 
 Arange :: struct { // this is default, so only keeps end value
@@ -112,7 +112,7 @@ Arange :: struct { // this is default, so only keeps end value
 Layer :: union {
     Linear,
     ReLU,
-    Add,
+    Cat,
     Arange
 }
 
@@ -150,6 +150,10 @@ linear_forward :: proc(layer: ^Linear, input: []f32, output: []f32) {
 
 arange_create :: proc(val: int) -> Arange{
     return Arange{end=val}
+}
+
+cat_create :: proc(dim: int) -> Cat{
+    return Cat{dim=dim}
 }
 
 arange_forward :: proc(output: []f32) {
@@ -194,10 +198,11 @@ layer_destroy :: proc(layer: ^Layer) {
     case Linear:
         linear_destroy(&l)
     case ReLU:
-        // Nothing to destroy for ReLU
+        // Nothing to destroy
     case Arange:
-        // Nothing to destroy for ReLU
-    case Add:
-        // Nothing to destroy for ReLU
+        // Nothing to destroy
+    case Cat:
+        // Nothing to destroy
+
     }
 }

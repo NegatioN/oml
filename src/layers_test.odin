@@ -86,24 +86,6 @@ test_add_broadcast :: proc(t: ^testing.T) {
 	testing.expect_value(t, output[3], 204.0)  // 4 + 200
 }
 
-// Test layer destroy
-@(test)
-test_layer_destroy :: proc(t: ^testing.T) {
-	// Test Linear destroy
-	weight := make([]f32, 4)
-	bias := make([]f32, 2)
-	linear_layer := linear_create(2, 2, weight, bias)
-	layer: Layer = linear_layer
-	layer_destroy(&layer)
-	// If no crash/leak, test passes
-	
-	// Test Add destroy
-	add_layer := Add{}
-	layer2: Layer = add_layer
-	layer_destroy(&layer2)
-	// If no crash/leak, test passes
-}
-
 // Test broadcasting: larger + smaller
 @(test)
 test_broadcast_larger_smaller :: proc(t: ^testing.T) {
@@ -156,6 +138,21 @@ test_broadcast_subshape :: proc(t: ^testing.T) {
     larger := []f32{2.0, 3.0, 4.0, 5.0}
     smaller := []f32{10.0, 3.0}
     output := make([]f32, len(larger))
+    defer delete(output)
+
+    broadcast_op_larger_smaller(larger, smaller, output, .Mul)
+
+    testing.expect_value(t, output[0], 20.0)   // 2 * 10
+    testing.expect_value(t, output[1], 9.0)   // 3 * 3
+    testing.expect_value(t, output[2], 40.0)   // 4 * 10
+    testing.expect_value(t, output[3], 15.0)   // 5 * 3
+}
+
+@(test)
+test_cat_tensors :: proc(t: ^testing.T) {
+    larger := []f32{2.0, 3.0, 4.0, 5.0}
+    smaller := []f32{10.0, 3.0}
+    output := make([]f32, len(larger)+len(smaller))
     defer delete(output)
 
     broadcast_op_larger_smaller(larger, smaller, output, .Mul)

@@ -25,9 +25,33 @@ load_pytorch_model_full :: proc(model_dir: string, allocator := context.allocato
 		fmt.printf("Failed to parse model.json: %v\n", parse_err)
 		return {}, {}, false
 	}
-    for &n in model.graph_module.graph.nodes {
-        n.operation = parse_operation(n.target)
-    }
+	
+	// Post-process: parse operations and expand variadic inputs/outputs
+	for &node in model.graph_module.graph.nodes {
+		node.operation = parse_operation(node.target)
+		
+		// Expand as_tensors into multiple as_tensor inputs
+		expanded_inputs := expand_node_inputs(node.inputs)
+		delete(node.inputs)  // Free old inputs
+		node.inputs = expanded_inputs
+		
+		// Expand as_tensors into multiple as_tensor outputs
+		expanded_outputs := expand_node_outputs(node.outputs)
+		delete(node.outputs)  // Free old outputs
+		node.outputs = expanded_outputs
+	}
+	
+	// Also expand graph-level inputs and outputs
+	{
+		expanded := expand_node_outputs(model.graph_module.graph.inputs)
+		delete(model.graph_module.graph.inputs)
+		model.graph_module.graph.inputs = expanded
+	}
+	{
+		expanded := expand_node_outputs(model.graph_module.graph.outputs)
+		delete(model.graph_module.graph.outputs)
+		model.graph_module.graph.outputs = expanded
+	}
 	
 	// Load weights from binary files
 	loaded_weights, weights_ok := load_weights_from_dir(model_dir)
