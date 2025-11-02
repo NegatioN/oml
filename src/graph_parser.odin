@@ -579,7 +579,7 @@ execute_add_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node) -> bool {
 	output_tensor := make_1d_tensor(output_data)
 	
 	// Execute add operation
-	add_forward(input_1, input_2, &output_tensor)
+	add_tensors(input_1, input_2, &output_tensor)
 	
 	// Store result
 	output_name := node.outputs[0].as_tensor.?.name
@@ -608,7 +608,7 @@ execute_sub_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node) -> bool {
 	output_tensor := make_1d_tensor(output_data)
 
     // Execute sub operation
-    sub_forward(input_1, input_2, &output_tensor)
+    sub_tensors(input_1, input_2, &output_tensor)
 
     // Store result
     output_name := node.outputs[0].as_tensor.?.name

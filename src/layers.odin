@@ -2,90 +2,7 @@ package main
 
 import "core:fmt"
 
-// Broadcasting operation type
-Broadcast_Op :: enum {
-    Add,
-    Mul,
-    Sub,
-    Div,
-}
 
-// Apply binary operation with broadcasting from smaller to larger
-// Precondition: len(larger) >= len(smaller)
-broadcast_op_larger_smaller :: proc(larger, smaller: []f32, output: []f32, op: Broadcast_Op) {
-    assert(len(output) == len(larger), "Output must match larger input size")
-    assert(len(larger) >= len(smaller), "First argument must be larger or equal")
-    
-    larger_len := len(larger)
-    smaller_len := len(smaller)
-    
-    if smaller_len == larger_len {
-        // Same size: element-wise operation
-        for i in 0..<larger_len {
-            output[i] = apply_op(larger[i], smaller[i], op)
-        }
-    } else if smaller_len == 1 {
-        // Broadcast scalar to all elements
-        scalar := smaller[0]
-        for i in 0..<larger_len {
-            output[i] = apply_op(larger[i], scalar, op)
-        }
-    } else if larger_len % smaller_len == 0 {
-        // Broadcast with repetition
-        // E.g., smaller=[a, b] larger=[x1, x2, x3, x4] -> [op(x1,a), op(x2,b), op(x3,a), op(x4,b)]
-        for i in 0..<larger_len {
-            output[i] = apply_op(larger[i], smaller[i % smaller_len], op)
-        }
-    } else {
-        panic("Incompatible broadcasting shapes")
-    }
-}
-
-// Apply binary operation with broadcasting from smaller to larger (reversed operands)
-// Precondition: len(smaller) <= len(larger)
-broadcast_op_smaller_larger :: proc(smaller, larger: []f32, output: []f32, op: Broadcast_Op) {
-    assert(len(output) == len(larger), "Output must match larger input size")
-    assert(len(smaller) <= len(larger), "First argument must be smaller or equal")
-    
-    // Just swap the operands when calling apply_op
-    larger_len := len(larger)
-    smaller_len := len(smaller)
-    
-    if smaller_len == larger_len {
-        // Same size: element-wise operation
-        for i in 0..<larger_len {
-            output[i] = apply_op(smaller[i], larger[i], op)
-        }
-    } else if smaller_len == 1 {
-        // Broadcast scalar to all elements
-        scalar := smaller[0]
-        for i in 0..<larger_len {
-            output[i] = apply_op(scalar, larger[i], op)
-        }
-    } else if larger_len % smaller_len == 0 {
-        // Broadcast with repetition
-        for i in 0..<larger_len {
-            output[i] = apply_op(smaller[i % smaller_len], larger[i], op)
-        }
-    } else {
-        panic("Incompatible broadcasting shapes")
-    }
-}
-
-// Apply a binary operation to two scalars
-apply_op :: proc(a, b: f32, op: Broadcast_Op) -> f32 {
-    switch op {
-    case .Add:
-        return a + b
-    case .Mul:
-        return a * b
-    case .Sub:
-        return a - b
-    case .Div:
-        return a / b
-    }
-    return 0
-}
 
 // Linear layer like PyTorch - using slices for flexible sizes
 Linear :: struct {
@@ -166,27 +83,6 @@ arange_forward :: proc(output: []f32) {
     for i in 0..<len(output){
         output[i] = cast(f32)i
     }
-}
-
-simple_op_forward :: proc(inp: Tensor, other: Tensor, output: ^Tensor, op: Broadcast_Op) {
-    // Use broadcasting utility function
-    input_len := len(inp.data)
-    other_len := len(other.data)
-    
-    if input_len >= other_len {
-        // inp is larger or equal, broadcast other to inp's shape
-        broadcast_op_larger_smaller(inp.data, other.data, output.data, op)
-    } else {
-        // other is larger, broadcast inp to other's shape
-        broadcast_op_smaller_larger(inp.data, other.data, output.data, op)
-    }
-}
-
-add_forward :: proc(inp: Tensor, other: Tensor, output: ^Tensor) {
-    simple_op_forward(inp, other, output, .Add)
-}
-sub_forward :: proc(inp: Tensor, other: Tensor, output: ^Tensor) {
-    simple_op_forward(inp, other, output, .Sub)
 }
 
 // ReLU forward pass: output = max(0, input)
