@@ -1,10 +1,38 @@
 package main
 
+import "core:math"
+
 Tensor :: struct {
     data: []f32, //TODO datatypes
     sizes: []int, //TODO find all
     strides: []int,
     //assume storage_offset is always 0 to simplify
+}
+
+tensor_mean :: proc(t: Tensor) -> f32 {
+    return mean(t.data)
+}
+
+f32_mean :: proc(d: []f32) -> f32 {
+    out: f32 = 0
+    for e in d {
+        out += e
+    }
+    return out / cast(f32)len(d)
+}
+mean :: proc{tensor_mean, f32_mean} // function overloading
+
+stddev :: proc(t: Tensor) -> f32 {
+    m := mean(t)
+    tmp := make([]f32, len(t.data))
+    defer delete(tmp)
+
+    for e, i in t.data {
+        tmp[i] = math.pow_f32(e-m, 2)
+    }
+
+    o := mean(tmp)
+    return math.sqrt(o)
 }
 
 meta_data_to_tensor :: proc(data: []f32, meta:Tensor_Meta) -> Tensor {
@@ -40,7 +68,7 @@ make_1d_tensor :: proc(data: []f32) -> Tensor {
     }
 }
 
-copy_tensor :: proc(t: Tensor) -> Tensor {
+copy_tensor :: proc(t: ^Tensor) -> Tensor {
     data := make([]f32, len(t.data))
     copy(data, t.data)
     
@@ -77,6 +105,10 @@ add_tensors :: proc(inp: Tensor, other: Tensor, output: ^Tensor) {
 }
 sub_tensors :: proc(inp: Tensor, other: Tensor, output: ^Tensor) {
     broadcast_binary_op(inp, other, output, .Sub)
+}
+
+div_tensors :: proc(inp: Tensor, other: Tensor, output: ^Tensor) {
+    broadcast_binary_op(inp, other, output, .Div)
 }
 
 // Compute linear index from multi-dimensional indices using strides

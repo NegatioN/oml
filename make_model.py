@@ -9,6 +9,7 @@ https://github.com/google-research/vision_transformer?tab=readme-ov-file#availab
 https://medium.com/@tomiwaojo7910/the-mlp-mixer-in-a-nutshell-a-groundbreaking-all-mlp-architecture-for-vision-by-google-researcher-a7f7e614ed01
 https://github.com/lucidrains/mlp-mixer-pytorch/tree/main
 '''
+'''
 class Net(nn.Module):
     def __init__(self):
         super(Net, self).__init__()
@@ -93,4 +94,3 @@ exported_program: ExportedProgram = export(model, args=example_args)
 print(exported_program)
 torch.export.save(exported_program, "model.pt2")
 print(model.eval()(img))
-'''

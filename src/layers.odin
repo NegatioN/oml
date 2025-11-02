@@ -1,6 +1,7 @@
 package main
 
 import "core:fmt"
+import "core:math"
 
 
 
@@ -11,11 +12,33 @@ Linear :: struct {
     weight:       Tensor,  // Shape: [out_features, in_features]
     bias:         Tensor,  // Shape: [out_features]
 }
+
 LayerNorm :: struct {
-    in_features:  int,
-    out_features: int,
-    weight:       []f32,  // Shape: [out_features, in_features]
-    bias:         []f32,  // Shape: [out_features]
+    epsilon: f32,
+    weight:       Tensor,  // Shape: [out_features, in_features]
+    bias:         Tensor,  // Shape: [out_features]
+}
+
+layernorm_create :: proc(eps:f32=1e-05) -> LayerNorm {
+    return LayerNorm{epsilon = eps}
+}
+
+layernorm_forward :: proc(layer: ^LayerNorm, input: Tensor, output: ^Tensor) {
+    assert(input.sizes[0] == layer.weight.sizes[0], "Input size mismatch")
+    assert(output.sizes[0] == layer.weight.sizes[0], "Output size mismatch") //TODO more robust size assertions
+    tmp := make([]f32, 1)
+    tmp[0] = mean(input)
+    mean_t := make_1d_tensor(tmp)
+    defer destroy_tensor(mean_t)
+    tmp_t := copy_tensor(output)
+    defer destroy_tensor(tmp_t)
+    sub_tensors(input, mean_t, &tmp_t)
+
+
+    // scary reassign
+    tmp[0] = math.sqrt(stddev(input) + layer.epsilon)
+    div_tensors(tmp_t, mean_t, output)
+    fmt.println(output)
 }
 
 // ReLU activation layer (stateless, but kept for consistency)
@@ -36,7 +59,8 @@ Layer :: union {
     Linear,
     ReLU,
     Cat,
-    Arange
+    Arange,
+    LayerNorm
 }
 
 // Create a new Linear layer with given dimensions and weight/bias data
@@ -47,12 +71,6 @@ linear_create :: proc(in_features, out_features: int, weight, bias: Tensor) -> L
         weight = weight,
         bias = bias,
     }
-}
-
-// Free the layer's memory
-linear_destroy :: proc(layer: ^Linear) {
-    // Tensors are owned by the executor's weights map, not by the layer
-    // So we don't destroy them here to avoid double-free
 }
 
 // Forward pass: output = input * weight^T + bias
@@ -94,17 +112,18 @@ relu_forward :: proc(input: Tensor, output: ^Tensor) {
     }
 }
 
-// Destroy a layer (frees any allocated memory)
+//TODO this never happens now?
 layer_destroy :: proc(layer: ^Layer) {
     switch &l in layer {
     case Linear:
-        linear_destroy(&l)
     case ReLU:
         // Nothing to destroy
     case Arange:
         // Nothing to destroy
     case Cat:
         // Nothing to destroy
+    case LayerNorm:
+    // Nothing to destroy
 
     }
 }

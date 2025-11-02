@@ -321,7 +321,7 @@ test_broadcast_div :: proc(t: ^testing.T) {
     testing.expect_value(t, out.data[3], 20.0)  // 40 / 2
 }
 
-// Test 12: Test check_broadcast_shapes helper
+// Test 13: Test check_broadcast_shapes helper
 @(test)
 test_check_broadcast_shapes :: proc(t: ^testing.T) {
     // Compatible: [3] and [1] -> [3]
@@ -379,6 +379,201 @@ test_check_broadcast_shapes :: proc(t: ^testing.T) {
         
         testing.expect(t, result == nil, "Shapes should be incompatible")
     }
+}
+
+// ========== Mean and Standard Deviation Tests ==========
+
+// Test: Mean of simple 1D tensor
+@(test)
+test_mean_simple :: proc(t: ^testing.T) {
+    data := []f32{1.0, 2.0, 3.0, 4.0, 5.0}
+    tensor := make_tensor(data, []int{5})
+    defer cleanup_tensor(tensor)
+    
+    result := mean(tensor)
+    expected := f32(3.0) // (1+2+3+4+5)/5 = 15/5 = 3
+    
+    testing.expect_value(t, result, expected)
+}
+
+// Test: Mean of all zeros
+@(test)
+test_mean_zeros :: proc(t: ^testing.T) {
+    data := []f32{0.0, 0.0, 0.0, 0.0}
+    tensor := make_tensor(data, []int{4})
+    defer cleanup_tensor(tensor)
+    
+    result := mean(tensor)
+    
+    testing.expect_value(t, result, 0.0)
+}
+
+// Test: Mean of negative numbers
+@(test)
+test_mean_negative :: proc(t: ^testing.T) {
+    data := []f32{-5.0, -3.0, -1.0, 1.0, 3.0, 5.0}
+    tensor := make_tensor(data, []int{6})
+    defer cleanup_tensor(tensor)
+    
+    result := mean(tensor)
+    expected := f32(0.0) // Sum = 0, Mean = 0
+    
+    testing.expect_value(t, result, expected)
+}
+
+// Test: Mean with fractional values
+@(test)
+test_mean_fractional :: proc(t: ^testing.T) {
+    data := []f32{1.5, 2.5, 3.5}
+    tensor := make_tensor(data, []int{3})
+    defer cleanup_tensor(tensor)
+    
+    result := mean(tensor)
+    expected := f32(2.5) // (1.5+2.5+3.5)/3 = 7.5/3 = 2.5
+    
+    testing.expect_value(t, result, expected)
+}
+
+// Test: Mean using f32_mean directly
+@(test)
+test_f32_mean :: proc(t: ^testing.T) {
+    data := []f32{10.0, 20.0, 30.0, 40.0}
+    
+    result := f32_mean(data)
+    expected := f32(25.0) // (10+20+30+40)/4 = 100/4 = 25
+    
+    testing.expect_value(t, result, expected)
+}
+
+// Test: Standard deviation of constant values (should be 0)
+@(test)
+test_stddev_constant :: proc(t: ^testing.T) {
+    data := []f32{5.0, 5.0, 5.0, 5.0, 5.0}
+    tensor := make_tensor(data, []int{5})
+    defer cleanup_tensor(tensor)
+    
+    result := stddev(tensor)
+    
+    testing.expect_value(t, result, 0.0)
+}
+
+// Test: Standard deviation of simple dataset
+@(test)
+test_stddev_simple :: proc(t: ^testing.T) {
+    // Using values: [1, 2, 3, 4, 5]
+    // Mean = 3
+    // Variance = ((1-3)^2 + (2-3)^2 + (3-3)^2 + (4-3)^2 + (5-3)^2) / 5
+    //          = (4 + 1 + 0 + 1 + 4) / 5 = 10/5 = 2
+    // StdDev = sqrt(2) ≈ 1.414
+    data := []f32{1.0, 2.0, 3.0, 4.0, 5.0}
+    tensor := make_tensor(data, []int{5})
+    defer cleanup_tensor(tensor)
+    
+    result := stddev(tensor)
+    expected := f32(1.4142135) // sqrt(2)
+    
+    // Use a small epsilon for floating point comparison
+    diff := abs(result - expected)
+    testing.expect(t, diff < 0.0001, "Standard deviation should be approximately sqrt(2)")
+}
+
+// Test: Standard deviation of zeros
+@(test)
+test_stddev_zeros :: proc(t: ^testing.T) {
+    data := []f32{0.0, 0.0, 0.0}
+    tensor := make_tensor(data, []int{3})
+    defer cleanup_tensor(tensor)
+    
+    result := stddev(tensor)
+    
+    testing.expect_value(t, result, 0.0)
+}
+
+// Test: Standard deviation with negative values
+@(test)
+test_stddev_negative :: proc(t: ^testing.T) {
+    // Using values: [-2, -1, 0, 1, 2]
+    // Mean = 0
+    // Variance = (4 + 1 + 0 + 1 + 4) / 5 = 10/5 = 2
+    // StdDev = sqrt(2) ≈ 1.414
+    data := []f32{-2.0, -1.0, 0.0, 1.0, 2.0}
+    tensor := make_tensor(data, []int{5})
+    defer cleanup_tensor(tensor)
+    
+    result := stddev(tensor)
+    expected := f32(1.4142135)
+    
+    diff := abs(result - expected)
+    testing.expect(t, diff < 0.0001, "Standard deviation should be approximately sqrt(2)")
+}
+
+// Test: Standard deviation with large variance
+@(test)
+test_stddev_large_variance :: proc(t: ^testing.T) {
+    // Values with large spread
+    data := []f32{0.0, 100.0}
+    tensor := make_tensor(data, []int{2})
+    defer cleanup_tensor(tensor)
+    
+    result := stddev(tensor)
+    // Mean = 50
+    // Variance = ((0-50)^2 + (100-50)^2) / 2 = (2500 + 2500) / 2 = 2500
+    // StdDev = sqrt(2500) = 50
+    expected := f32(50.0)
+    
+    testing.expect_value(t, result, expected)
+}
+
+// Test: Mean and stddev on same dataset
+@(test)
+test_mean_and_stddev_combined :: proc(t: ^testing.T) {
+    data := []f32{2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0}
+    tensor := make_tensor(data, []int{8})
+    defer cleanup_tensor(tensor)
+    
+    m := mean(tensor)
+    s := stddev(tensor)
+    
+    // Mean = (2+4+4+4+5+5+7+9)/8 = 40/8 = 5
+    testing.expect_value(t, m, 5.0)
+    
+    // Variance = ((2-5)^2 + 3*(4-5)^2 + 2*(5-5)^2 + (7-5)^2 + (9-5)^2) / 8
+    //          = (9 + 3 + 0 + 4 + 16) / 8 = 32/8 = 4
+    // StdDev = sqrt(4) = 2
+    testing.expect_value(t, s, 2.0)
+}
+
+// Test: Mean with 2D tensor (should flatten and compute mean)
+@(test)
+test_mean_2d_tensor :: proc(t: ^testing.T) {
+    // 2x3 tensor: [[1, 2, 3], [4, 5, 6]]
+    data := []f32{1.0, 2.0, 3.0, 4.0, 5.0, 6.0}
+    tensor := make_tensor(data, []int{2, 3})
+    defer cleanup_tensor(tensor)
+    
+    result := mean(tensor)
+    expected := f32(3.5) // (1+2+3+4+5+6)/6 = 21/6 = 3.5
+    
+    testing.expect_value(t, result, expected)
+}
+
+// Test: Stddev with 2D tensor
+@(test)
+test_stddev_2d_tensor :: proc(t: ^testing.T) {
+    // 2x2 tensor: [[1, 3], [3, 5]]
+    // Mean = (1+3+3+5)/4 = 12/4 = 3
+    // Variance = ((1-3)^2 + (3-3)^2 + (3-3)^2 + (5-3)^2) / 4
+    //          = (4 + 0 + 0 + 4) / 4 = 8/4 = 2
+    // StdDev = sqrt(2) ≈ 1.414
+    data := []f32{1.0, 3.0, 3.0, 5.0}
+    tensor := make_tensor(data, []int{2, 2})
+    defer cleanup_tensor(tensor)
+    
+    result := stddev(tensor)
+    expected := f32(1.4142135)
+    
+    diff := abs(result - expected)
+    testing.expect(t, diff < 0.0001, "Standard deviation should be approximately sqrt(2)")
 }
 
 // Test 13: Test with actual model operations (add_forward and sub_forward)

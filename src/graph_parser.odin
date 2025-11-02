@@ -153,7 +153,7 @@ get_tensor_from_arg :: proc(arg: Node_Arg, executor: ^Graph_Executor, allocator 
 }
 
 Node_Operation :: enum {
-    Linear, ReLU, Add, Sub, Arange, LiftFreshCopy, Cat, Noop, LayerNorm, Unknown,
+    Linear, ReLU, Add, Sub, Arange, LiftFreshCopy, Cat, Noop, LayerNorm, NotYetImpl, Unknown,
 }
 
 parse_operation :: proc(target: string) -> Node_Operation {
@@ -166,6 +166,14 @@ parse_operation :: proc(target: string) -> Node_Operation {
         return .Linear
     case "torch.ops.aten.layer_norm.default":
         return .LayerNorm
+    case "torch.ops.aten.reshape.default":
+        return .NotYetImpl
+    case "torch.ops.aten.permute.default":
+        return .NotYetImpl
+    case "torch.ops.aten.conv1d.default":
+        return .NotYetImpl
+    case "torch.ops.aten.mean.dim":
+        return .NotYetImpl
     case "torch.ops.aten.relu.default":
         return .ReLU
     case "torch.ops.aten.gelu.default": // Circle back and implement GELU
@@ -412,6 +420,8 @@ build_layers_from_graph :: proc(graph: ^Graph, weights: map[string]Tensor) -> []
 
         case Node_Operation.LayerNorm:
             fmt.println(node)
+        case Node_Operation.NotYetImpl:
+            fmt.println(node)
         case Node_Operation.Arange:
             end := node.inputs[0].arg.as_int.?
             layer = arange_create(end)
@@ -507,6 +517,8 @@ execute_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^Layer
         return execute_copy_node(executor, node)
     case Node_Operation.Noop:
         return execute_copy_node(executor, node)
+    case Node_Operation.NotYetImpl:
+        return execute_copy_node(executor, node)
     case Node_Operation.Cat:
         return execute_cat_node(executor, node, layer)
 	case Node_Operation.Unknown:
@@ -537,6 +549,32 @@ execute_linear_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer:
 	// Store result
 	executor.tensors[output_name] = output_tensor
 	return true
+}
+
+execute_layernorm_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^Layer) -> bool {
+    layernorm_l := layer.(LayerNorm) or_return
+
+    // Get input and output names
+    input_name := node.inputs[0].arg.as_tensor.?.name
+    output_name := node.outputs[0].as_tensor.?.name
+
+    // Fetch input tensor
+    input_tensor := executor.tensors[input_name] if input_name in executor.tensors else executor.weights[input_name]
+
+    // Create output tensor
+    output_data := make([]f32, layernorm_l.weight.sizes[0])
+    output_tensor := make_1d_tensor(output_data)
+
+    fmt.println(layernorm_l)
+    fmt.println(input_name)
+    fmt.println(output_name)
+
+    // Execute the layer
+    layernorm_forward(&layernorm_l, input_tensor, &output_tensor)
+
+    // Store result
+    executor.tensors[output_name] = output_tensor
+    return true
 }
 
 // Execute ReLU node using pre-built ReLU layer

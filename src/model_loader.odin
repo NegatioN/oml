@@ -89,7 +89,7 @@ create_executor_from_model :: proc(model: ^Graph_Model, weights: map[string]Tens
 			
 			if weight_tensor, found := weights[param_name]; found {
 				// Deep copy to avoid double-free when maps are deleted
-				remapped_weights[graph_name] = copy_tensor(weight_tensor)
+				remapped_weights[graph_name] = copy_tensor(&weight_tensor)
 			}
 		}
 	}
@@ -107,7 +107,7 @@ create_executor_from_model :: proc(model: ^Graph_Model, weights: map[string]Tens
 			// Check if this constant was loaded
 			if const_tensor, found := all_constants[const_name]; found {
 				// Deep copy to avoid double-free when maps are deleted
-				remapped_constants[graph_name] = copy_tensor(const_tensor)
+				remapped_constants[graph_name] = copy_tensor(&const_tensor)
 				delete_key(&all_constants, const_name) // Remove from all_constants to avoid double-free
 				fmt.printf("Remapped constant: %s -> %s\n", const_name, graph_name)
 			}
