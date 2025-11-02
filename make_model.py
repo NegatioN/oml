@@ -9,13 +9,11 @@ https://github.com/google-research/vision_transformer?tab=readme-ov-file#availab
 https://medium.com/@tomiwaojo7910/the-mlp-mixer-in-a-nutshell-a-groundbreaking-all-mlp-architecture-for-vision-by-google-researcher-a7f7e614ed01
 https://github.com/lucidrains/mlp-mixer-pytorch/tree/main
 '''
-'''
 class Net(nn.Module):
     def __init__(self):
         super(Net, self).__init__()
         self.fc1 = nn.Linear(1, 4)
         self.fc2 = nn.Linear(4, 1)
-        self.fc3 = nn.Linear(4, 1)
         #self.m = nn.MaxPool1d(3, stride=2)
         # TODO tensor.sum()
         #TODO research hva som er minste nødvendige implementasjon for å få en "saklig" modell til å kjøre
@@ -23,7 +21,7 @@ class Net(nn.Module):
     def forward(self, x):
         x = self.fc1(x) #torch.arange(4, dtype=torch.float32) # 8x1 -> 8x1
         x = F.relu(x)
-        x = torch.cat([self.fc2(x), self.fc3(x)], dim=0)#.sum()
+        x = self.fc2(x.reshape(4).reshape(1, 4))
         return x
 model = Net()
 
@@ -94,3 +92,4 @@ exported_program: ExportedProgram = export(model, args=example_args)
 print(exported_program)
 torch.export.save(exported_program, "model.pt2")
 print(model.eval()(img))
+'''

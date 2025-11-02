@@ -9,6 +9,18 @@ Tensor :: struct {
     //assume storage_offset is always 0 to simplify
 }
 
+tensor_reshape :: proc(t: Tensor, sizes: []int) {
+    assert(len(t.sizes) == len(sizes), "Input sizes do not match existing sizes")
+    for e,i in sizes {
+        t.sizes[i] = e
+    }
+    strides := size_to_strides(t.sizes) //TODO just modify the strides of the tensor in place?
+    defer delete(strides)
+    for e,i in strides {
+        t.strides[i] = e
+    }
+}
+
 tensor_mean :: proc(t: Tensor) -> f32 {
     return mean(t.data)
 }
@@ -20,6 +32,7 @@ f32_mean :: proc(d: []f32) -> f32 {
     }
     return out / cast(f32)len(d)
 }
+
 mean :: proc{tensor_mean, f32_mean} // function overloading
 
 stddev :: proc(t: Tensor) -> f32 {
@@ -85,18 +98,24 @@ copy_tensor :: proc(t: ^Tensor) -> Tensor {
     }
 }
 
-// this might not be needed right away
+// Convert sizes to strides for a contiguous tensor
+// Example: [2, 3, 4] -> [12, 4, 1]
+// The last dimension has stride 1, each previous dimension's stride is the product of all following sizes
 size_to_strides :: proc(sizes: []int) -> []int {
-    // ex: (2, 3, 4)size would result in -> (12, 4, 1) strides
-    strides := make([]int, len(sizes))
-    strides[len(strides)-1] = 1 // last stride is always 1
-    if len(sizes) == 1 {
-    } else {
-        for i in len(strides)-1..<0 {
-
-
-        }
+    if len(sizes) == 0 {
+        return nil
     }
+    
+    strides := make([]int, len(sizes))
+    
+    // Last stride is always 1
+    strides[len(strides) - 1] = 1
+    
+    // Work backwards, computing each stride as the product of the next dimension's size and stride
+    for i := len(strides) - 2; i >= 0; i -= 1 {
+        strides[i] = strides[i + 1] * sizes[i + 1]
+    }
+    
     return strides
 }
 

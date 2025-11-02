@@ -30,6 +30,7 @@ Graph :: struct {
 Node_Arg :: struct {
 	as_tensor: Maybe(Tensor_Name),
     as_tensors: Maybe([]Tensor_Name), // For now we remap this to single arguments
+    as_ints:   Maybe([]int),
 	as_int:    Maybe(int),
 	as_float:  Maybe(f32),
 	as_bool:   Maybe(bool),
@@ -153,21 +154,17 @@ get_tensor_from_arg :: proc(arg: Node_Arg, executor: ^Graph_Executor, allocator 
 }
 
 Node_Operation :: enum {
-    Linear, ReLU, Add, Sub, Arange, LiftFreshCopy, Cat, Noop, LayerNorm, NotYetImpl, Unknown,
+    Linear, ReLU, Add, Sub, Arange, LiftFreshCopy, Cat, Noop, LayerNorm, Reshape, NotYetImpl, Unknown,
 }
 
 parse_operation :: proc(target: string) -> Node_Operation {
-    /*
-    Other relevant operators:
-    torch.ops.aten.to.dtype
-    */
     switch target {
     case "torch.ops.aten.linear.default":
         return .Linear
     case "torch.ops.aten.layer_norm.default":
         return .LayerNorm
     case "torch.ops.aten.reshape.default":
-        return .NotYetImpl
+        return .Reshape
     case "torch.ops.aten.permute.default":
         return .NotYetImpl
     case "torch.ops.aten.conv1d.default":
@@ -420,6 +417,8 @@ build_layers_from_graph :: proc(graph: ^Graph, weights: map[string]Tensor) -> []
 
         case Node_Operation.LayerNorm:
             fmt.println(node)
+        case Node_Operation.Reshape:
+            fmt.println(node)
         case Node_Operation.NotYetImpl:
             fmt.println(node)
         case Node_Operation.Arange:
@@ -504,6 +503,8 @@ execute_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^Layer
 	case Node_Operation.Linear:
 		return execute_linear_node(executor, node, layer)
     case Node_Operation.LayerNorm:
+        return execute_layernorm_node(executor, node, layer)
+    case Node_Operation.Reshape:
         return execute_linear_node(executor, node, layer)
 	case Node_Operation.ReLU:
 		return execute_relu_node(executor, node)
@@ -577,7 +578,23 @@ execute_layernorm_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node, lay
     return true
 }
 
-// Execute ReLU node using pre-built ReLU layer
+execute_reshape_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node) -> bool {
+    input_name := node.inputs[0].arg.as_tensor.?.name
+    input_sizes := node.inputs[1].arg.as_ints.?
+    output_name := node.outputs[0].as_tensor.?.name
+    fmt.println(input_sizes)
+
+    // Fetch input tensor
+    input_tensor := executor.tensors[input_name]
+
+    output_tensor := copy_tensor(&input_tensor)
+    tensor_reshape(output_tensor, input_sizes)
+
+    // Store result
+    executor.tensors[output_name] = output_tensor
+    return true
+}
+
 execute_relu_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node) -> bool {
 	// Get input and output names
 	input_name := node.inputs[0].arg.as_tensor.?.name

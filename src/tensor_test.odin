@@ -576,6 +576,136 @@ test_stddev_2d_tensor :: proc(t: ^testing.T) {
     testing.expect(t, diff < 0.0001, "Standard deviation should be approximately sqrt(2)")
 }
 
+// ========== size_to_strides Tests ==========
+
+// Test: 1D sizes to strides
+@(test)
+test_size_to_strides_1d :: proc(t: ^testing.T) {
+    sizes := []int{5}
+    strides := size_to_strides(sizes)
+    defer delete(strides)
+    
+    testing.expect_value(t, len(strides), 1)
+    testing.expect_value(t, strides[0], 1)
+}
+
+// Test: 2D sizes to strides
+@(test)
+test_size_to_strides_2d :: proc(t: ^testing.T) {
+    sizes := []int{3, 4}
+    strides := size_to_strides(sizes)
+    defer delete(strides)
+    
+    // For [3, 4], strides should be [4, 1]
+    // First dimension jumps by 4 elements, last dimension by 1
+    testing.expect_value(t, len(strides), 2)
+    testing.expect_value(t, strides[0], 4)
+    testing.expect_value(t, strides[1], 1)
+}
+
+// Test: 3D sizes to strides
+@(test)
+test_size_to_strides_3d :: proc(t: ^testing.T) {
+    sizes := []int{2, 3, 4}
+    strides := size_to_strides(sizes)
+    defer delete(strides)
+    
+    // For [2, 3, 4], strides should be [12, 4, 1]
+    // - Last dimension (4): stride = 1
+    // - Middle dimension (3): stride = 4 * 1 = 4
+    // - First dimension (2): stride = 3 * 4 = 12
+    testing.expect_value(t, len(strides), 3)
+    testing.expect_value(t, strides[0], 12)
+    testing.expect_value(t, strides[1], 4)
+    testing.expect_value(t, strides[2], 1)
+}
+
+// Test: 4D sizes to strides
+@(test)
+test_size_to_strides_4d :: proc(t: ^testing.T) {
+    sizes := []int{2, 3, 4, 5}
+    strides := size_to_strides(sizes)
+    defer delete(strides)
+    
+    // For [2, 3, 4, 5], strides should be [60, 20, 5, 1]
+    // - Last dimension (5): stride = 1
+    // - 3rd dimension (4): stride = 5 * 1 = 5
+    // - 2nd dimension (3): stride = 4 * 5 = 20
+    // - 1st dimension (2): stride = 3 * 20 = 60
+    testing.expect_value(t, len(strides), 4)
+    testing.expect_value(t, strides[0], 60)
+    testing.expect_value(t, strides[1], 20)
+    testing.expect_value(t, strides[2], 5)
+    testing.expect_value(t, strides[3], 1)
+}
+
+// Test: Empty sizes
+@(test)
+test_size_to_strides_empty :: proc(t: ^testing.T) {
+    sizes := []int{}
+    strides := size_to_strides(sizes)
+    
+    testing.expect(t, strides == nil, "Empty sizes should return nil")
+}
+
+// Test: Single element tensor (all dimensions are 1)
+@(test)
+test_size_to_strides_all_ones :: proc(t: ^testing.T) {
+    sizes := []int{1, 1, 1}
+    strides := size_to_strides(sizes)
+    defer delete(strides)
+    
+    // For [1, 1, 1], strides should be [1, 1, 1]
+    testing.expect_value(t, len(strides), 3)
+    testing.expect_value(t, strides[0], 1)
+    testing.expect_value(t, strides[1], 1)
+    testing.expect_value(t, strides[2], 1)
+}
+
+// Test: Large dimensions
+@(test)
+test_size_to_strides_large :: proc(t: ^testing.T) {
+    sizes := []int{10, 20, 30}
+    strides := size_to_strides(sizes)
+    defer delete(strides)
+    
+    // For [10, 20, 30], strides should be [600, 30, 1]
+    testing.expect_value(t, len(strides), 3)
+    testing.expect_value(t, strides[0], 600)
+    testing.expect_value(t, strides[1], 30)
+    testing.expect_value(t, strides[2], 1)
+}
+
+// Test: Verify stride computation with actual indexing
+@(test)
+test_size_to_strides_indexing :: proc(t: ^testing.T) {
+    // Create a 2x3 tensor
+    sizes := []int{2, 3}
+    strides := size_to_strides(sizes)
+    defer delete(strides)
+    
+    // Manually verify that indices [i, j] map correctly
+    // Index [0, 0] should be at linear index 0
+    idx_00 := 0 * strides[0] + 0 * strides[1]
+    testing.expect_value(t, idx_00, 0)
+    
+    // Index [0, 1] should be at linear index 1
+    idx_01 := 0 * strides[0] + 1 * strides[1]
+    testing.expect_value(t, idx_01, 1)
+    
+    // Index [0, 2] should be at linear index 2
+    idx_02 := 0 * strides[0] + 2 * strides[1]
+    testing.expect_value(t, idx_02, 2)
+    
+    // Index [1, 0] should be at linear index 3
+    idx_10 := 1 * strides[0] + 0 * strides[1]
+    testing.expect_value(t, idx_10, 3)
+    
+    // Index [1, 2] should be at linear index 5
+    idx_12 := 1 * strides[0] + 2 * strides[1]
+    testing.expect_value(t, idx_12, 5)
+}
+
 // Test 13: Test with actual model operations (add_forward and sub_forward)
 @(test)
 test_add_tensors:: proc(t: ^testing.T) {
