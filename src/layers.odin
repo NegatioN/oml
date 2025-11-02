@@ -91,6 +91,12 @@ apply_op :: proc(a, b: f32, op: Broadcast_Op) -> f32 {
 Linear :: struct {
     in_features:  int,
     out_features: int,
+    weight:       Tensor,  // Shape: [out_features, in_features]
+    bias:         Tensor,  // Shape: [out_features]
+}
+LayerNorm :: struct {
+    in_features:  int,
+    out_features: int,
     weight:       []f32,  // Shape: [out_features, in_features]
     bias:         []f32,  // Shape: [out_features]
 }
@@ -117,7 +123,7 @@ Layer :: union {
 }
 
 // Create a new Linear layer with given dimensions and weight/bias data
-linear_create :: proc(in_features, out_features: int, weight, bias: []f32) -> Linear {
+linear_create :: proc(in_features, out_features: int, weight, bias: Tensor) -> Linear {
     return Linear{
         in_features = in_features,
         out_features = out_features,
@@ -128,23 +134,23 @@ linear_create :: proc(in_features, out_features: int, weight, bias: []f32) -> Li
 
 // Free the layer's memory
 linear_destroy :: proc(layer: ^Linear) {
-    delete(layer.weight)
-    delete(layer.bias)
+    // Tensors are owned by the executor's weights map, not by the layer
+    // So we don't destroy them here to avoid double-free
 }
 
 // Forward pass: output = input * weight^T + bias
 // This is the core computation logic for a linear layer
-linear_forward :: proc(layer: ^Linear, input: []f32, output: []f32) {
-    assert(len(input) == layer.in_features, "Input size mismatch")
-    assert(len(output) == layer.out_features, "Output size mismatch")
+linear_forward :: proc(layer: ^Linear, input: Tensor, output: ^Tensor) {
+    assert(len(input.data) == layer.in_features, "Input size mismatch")
+    assert(len(output.data) == layer.out_features, "Output size mismatch")
 
     for i in 0..<layer.out_features {
-        sum := layer.bias[i]
+        sum := layer.bias.data[i]
         for j in 0..<layer.in_features {
             weight_idx := i * layer.in_features + j
-            sum += input[j] * layer.weight[weight_idx]
+            sum += input.data[j] * layer.weight.data[weight_idx]
         }
-        output[i] = sum
+        output.data[i] = sum
     }
 }
 
@@ -162,33 +168,33 @@ arange_forward :: proc(output: []f32) {
     }
 }
 
-simple_op_forward :: proc(inp: []f32, other: []f32, output: []f32, op: Broadcast_Op) {
+simple_op_forward :: proc(inp: Tensor, other: Tensor, output: ^Tensor, op: Broadcast_Op) {
     // Use broadcasting utility function
-    input_len := len(inp)
-    other_len := len(other)
+    input_len := len(inp.data)
+    other_len := len(other.data)
     
     if input_len >= other_len {
         // inp is larger or equal, broadcast other to inp's shape
-        broadcast_op_larger_smaller(inp, other, output, op)
+        broadcast_op_larger_smaller(inp.data, other.data, output.data, op)
     } else {
         // other is larger, broadcast inp to other's shape
-        broadcast_op_smaller_larger(inp, other, output, op)
+        broadcast_op_smaller_larger(inp.data, other.data, output.data, op)
     }
 }
 
-add_forward :: proc(inp: []f32, other: []f32, output: []f32) {
+add_forward :: proc(inp: Tensor, other: Tensor, output: ^Tensor) {
     simple_op_forward(inp, other, output, .Add)
 }
-sub_forward :: proc(inp: []f32, other: []f32, output: []f32) {
+sub_forward :: proc(inp: Tensor, other: Tensor, output: ^Tensor) {
     simple_op_forward(inp, other, output, .Sub)
 }
 
 // ReLU forward pass: output = max(0, input)
-relu_forward :: proc(input: []f32, output: []f32) {
-    assert(len(input) == len(output), "Input and output size mismatch")
+relu_forward :: proc(input: Tensor, output: ^Tensor) {
+    assert(len(input.data) == len(output.data), "Input and output size mismatch")
     
-    for i in 0..<len(input) {
-        output[i] = max(0, input[i])
+    for i in 0..<len(input.data) {
+        output.data[i] = max(0, input.data[i])
     }
 }
 

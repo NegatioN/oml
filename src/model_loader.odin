@@ -7,7 +7,7 @@ import "core:encoding/json"
 import "core:mem"
 
 // Load PyTorch model from directory
-load_pytorch_model_full :: proc(model_dir: string, allocator := context.allocator) -> (model: Graph_Model, weights: map[string][]f32, ok: bool) {
+load_pytorch_model_full :: proc(model_dir: string, allocator := context.allocator) -> (model: Graph_Model, weights: map[string]Tensor, ok: bool) {
 	context.allocator = allocator
 	
 	// Load model.json
@@ -64,7 +64,7 @@ load_pytorch_model_full :: proc(model_dir: string, allocator := context.allocato
 }
 
 // Load weights from the weights directory
-load_weights_from_dir :: proc(model_dir: string, allocator := context.allocator) -> (weights: map[string][]f32, ok: bool) {
+load_weights_from_dir :: proc(model_dir: string, allocator := context.allocator) -> (weights: map[string]Tensor, ok: bool) {
 	context.allocator = allocator
 	
 	// Use the shared helper to load weights
@@ -75,11 +75,11 @@ load_weights_from_dir :: proc(model_dir: string, allocator := context.allocator)
 }
 
 // Create executor from loaded model
-create_executor_from_model :: proc(model: ^Graph_Model, weights: map[string][]f32, model_dir: string) -> Graph_Executor {
+create_executor_from_model :: proc(model: ^Graph_Model, weights: map[string]Tensor, model_dir: string) -> Graph_Executor {
 	// Remap weights and constants using the signature
 	// PyTorch exports use parameter names like "fc1.weight" and constant names like "data"
 	// but the graph uses names like "p_fc1_weight" and "c_data"
-	remapped_weights := make(map[string][]f32)
+	remapped_weights := make(map[string]Tensor)
 	
 	for input_spec in model.graph_module.signature.input_specs {
 		// Handle parameters (weights/biases)
@@ -87,11 +87,9 @@ create_executor_from_model :: proc(model: ^Graph_Model, weights: map[string][]f3
 			param_name := param.parameter_name
 			graph_name := param.arg.name
 			
-			if weight_data, found := weights[param_name]; found {
-				// COPY the weight data to the graph name (don't alias!)
-				copied_weight := make([]f32, len(weight_data))
-				copy(copied_weight, weight_data)
-				remapped_weights[graph_name] = copied_weight
+			if weight_tensor, found := weights[param_name]; found {
+				// Deep copy to avoid double-free when maps are deleted
+				remapped_weights[graph_name] = copy_tensor(weight_tensor)
 			}
 		}
 	}
@@ -100,15 +98,16 @@ create_executor_from_model :: proc(model: ^Graph_Model, weights: map[string][]f3
 	all_constants, _ := build_constants_from_graph(&model.graph_module.graph, model_dir)
 	
 	// Remap file-based constants using signature
-	remapped_constants := make(map[string][]f32)
+	remapped_constants := make(map[string]Tensor)
 	for input_spec in model.graph_module.signature.input_specs {
 		if const_info, ok := input_spec.tensor_constant.?; ok {
 			const_name := const_info.tensor_constant_name
 			graph_name := const_info.arg.name
 			
 			// Check if this constant was loaded
-			if const_data, found := all_constants[const_name]; found {
-				remapped_constants[graph_name] = const_data
+			if const_tensor, found := all_constants[const_name]; found {
+				// Deep copy to avoid double-free when maps are deleted
+				remapped_constants[graph_name] = copy_tensor(const_tensor)
 				delete_key(&all_constants, const_name) // Remove from all_constants to avoid double-free
 				fmt.printf("Remapped constant: %s -> %s\n", const_name, graph_name)
 			}
@@ -116,8 +115,8 @@ create_executor_from_model :: proc(model: ^Graph_Model, weights: map[string][]f3
 	}
 	
 	// Add any remaining constants (inline scalars, etc.) that don't need remapping
-	for name, data in all_constants {
-		remapped_constants[name] = data
+	for name, tensor in all_constants {
+		remapped_constants[name] = tensor
 	}
 	delete(all_constants)
 	
@@ -128,7 +127,7 @@ create_executor_from_model :: proc(model: ^Graph_Model, weights: map[string][]f3
 		graph = &model.graph_module.graph,
 		weights = remapped_weights,
 		constants = remapped_constants,
-		tensors = make(map[string][]f32),
+		tensors = make(map[string]Tensor),
 		layers = layers,
 	}
 	return executor
@@ -144,8 +143,11 @@ test_loaded_model :: proc() {
 		fmt.println("Failed to load model")
 		return
 	}
+	// Clean up original weights map after creating executor (executor has copies)
 	defer {
-		for _, w in weights do delete(w)
+		for _, t in weights {
+			destroy_tensor(t)
+		}
 		delete(weights)
 	}
 	
@@ -156,13 +158,28 @@ test_loaded_model :: proc() {
 	// Print graph info
 	print_graph_summary(&model.graph_module.graph)
 	
-	// Create executor with constants
+	// Create executor with constants (executor takes ownership of weight tensors)
 	executor := create_executor_from_model(&model, weights, "model")
 	defer {
-		for _, t in executor.tensors do delete(t)
+		// Clean up runtime tensors
+		for _, t in executor.tensors {
+			destroy_tensor(t)
+		}
 		delete(executor.tensors)
-		for _, c in executor.constants do delete(c)
+		
+		// Clean up constants
+		for _, c in executor.constants {
+			destroy_tensor(c)
+		}
 		delete(executor.constants)
+		
+		// Clean up weight tensors (executor owns these)
+		for _, w in executor.weights {
+			destroy_tensor(w)
+		}
+		delete(executor.weights)
+		
+		// Clean up layers
 		for &layer in executor.layers do layer_destroy(&layer)
 		delete(executor.layers)
 	}

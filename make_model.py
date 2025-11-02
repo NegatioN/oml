@@ -24,7 +24,6 @@ class Net(nn.Module):
         x = F.relu(x)
         x = torch.cat([self.fc2(x), self.fc3(x)], dim=0)#.sum()
         return x
-'''
 model = Net()
 
 example_args = (torch.randn(1, 1),)
@@ -33,8 +32,8 @@ print(exported_program)
 print(model.fc1.weight, model.fc1.bias)
 torch.export.save(exported_program, "model.pt2")
 print(model.eval()(torch.Tensor([0.5, 1.0, -1.0, 2]).unsqueeze(1)))
-'''
 
+'''
 ## MLP-Mixer
 from torch import nn
 from functools import partial
@@ -94,3 +93,4 @@ exported_program: ExportedProgram = export(model, args=example_args)
 print(exported_program)
 torch.export.save(exported_program, "model.pt2")
 print(model.eval()(img))
+'''

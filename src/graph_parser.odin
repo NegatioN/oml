@@ -135,7 +135,7 @@ node_arg_to_name :: proc(arg: Node_Arg, allocator := context.allocator) -> (name
 }
 
 // Helper to get tensor data from a Node_Arg even if its a weight, tensor or constant
-get_tensor_from_arg :: proc(arg: Node_Arg, executor: ^Graph_Executor, allocator := context.allocator) -> (tensor: []f32, ok: bool) {
+get_tensor_from_arg :: proc(arg: Node_Arg, executor: ^Graph_Executor, allocator := context.allocator) -> (tensor: Tensor, ok: bool) {
 	context.allocator = allocator
 	if tensor_name, has_tensor := node_arg_to_name(arg); has_tensor {
 		// Look up tensor in executor's runtime tensors, constants, or weights
@@ -149,11 +149,11 @@ get_tensor_from_arg :: proc(arg: Node_Arg, executor: ^Graph_Executor, allocator 
 			return w, true
 		}
 	}
-	return nil, false
+	return {}, false
 }
 
 Node_Operation :: enum {
-    Linear, ReLU, Add, Sub, Arange, LiftFreshCopy, Cat, Noop, Unknown,
+    Linear, ReLU, Add, Sub, Arange, LiftFreshCopy, Cat, Noop, LayerNorm, Unknown,
 }
 
 parse_operation :: proc(target: string) -> Node_Operation {
@@ -164,6 +164,8 @@ parse_operation :: proc(target: string) -> Node_Operation {
     switch target {
     case "torch.ops.aten.linear.default":
         return .Linear
+    case "torch.ops.aten.layer_norm.default":
+        return .LayerNorm
     case "torch.ops.aten.relu.default":
         return .ReLU
     case "torch.ops.aten.gelu.default": // Circle back and implement GELU
@@ -248,9 +250,9 @@ load_f32_tensor_from_file :: proc(path: string) -> (tensor: []f32, ok: bool) {
 	return result, true
 }
 
-// Helper: Load tensor config from JSON file and load all tensor files
-load_tensor_config :: proc(config_path: string, data_dir: string) -> (tensors: map[string][]f32, ok: bool) {
-	tensors = make(map[string][]f32)
+// Helper: Load tensor config from JSON file and load all tensor files as Tensors
+load_tensor_config :: proc(config_path: string, data_dir: string) -> (tensors: map[string]Tensor, ok: bool) {
+	tensors = make(map[string]Tensor)
 	
 	config_data, read_ok := os.read_entire_file(config_path)
 	if !read_ok do return tensors, false
@@ -266,13 +268,16 @@ load_tensor_config :: proc(config_path: string, data_dir: string) -> (tensors: m
 	if parse_err != nil do return tensors, false
 	defer delete(config.config)
 	
-	// Load each tensor file
+	// Load each tensor file and create Tensor from metadata
 	for tensor_name, tensor_info in config.config {
 		tensor_path := fmt.tprintf("%s/%s", data_dir, tensor_info.path_name)
 		tensor_data, t_ok := load_f32_tensor_from_file(tensor_path)
 		if t_ok {
-			tensors[tensor_name] = tensor_data
-			fmt.printf("Loaded %s: %d floats from %s\n", tensor_name, len(tensor_data), tensor_info.path_name)
+			// Create Tensor with metadata
+			tensor := meta_data_to_tensor(tensor_data, tensor_info.tensor_meta)
+			tensors[tensor_name] = tensor
+			fmt.printf("Loaded %s: %d floats from %s (shape: %v)\n", 
+				tensor_name, len(tensor_data), tensor_info.path_name, tensor.sizes)
 		}
 	}
 	
@@ -320,23 +325,23 @@ Schema_Version :: struct {
 // Graph execution context
 Graph_Executor :: struct {
 	graph: ^Graph,
-	weights: map[string][]f32,       // Pre-loaded model weights
-	constants: map[string][]f32,     // Pre-loaded constant tensors (from files + inline scalars)
-	tensors: map[string][]f32,       // Runtime tensor values
+	weights: map[string]Tensor,      // Pre-loaded model weights as tensors
+	constants: map[string]Tensor,    // Pre-loaded constant tensors (from files + inline scalars)
+	tensors: map[string]Tensor,      // Runtime tensor values
 	layers: []Layer,                 // Pre-built layers in execution order
 }
 
 // Build constants map from file-based constants and inline scalars in the graph
-build_constants_from_graph :: proc(graph: ^Graph, model_dir: string) -> (constants: map[string][]f32, ok: bool) {
-	constants = make(map[string][]f32)
+build_constants_from_graph :: proc(graph: ^Graph, model_dir: string) -> (constants: map[string]Tensor, ok: bool) {
+	constants = make(map[string]Tensor)
 	
 	// 1. Load file-based constants from model/data/constants/ using helper
 	constants_config_path := fmt.tprintf("%s/data/constants/model_constants_config.json", model_dir)
 	file_constants, loaded := load_tensor_config(constants_config_path, fmt.tprintf("%s/data/constants", model_dir))
 	if loaded {
 		// Merge file constants into our map
-		for name, data in file_constants {
-			constants[name] = data
+		for name, tensor in file_constants {
+			constants[name] = tensor
 		}
 		delete(file_constants)
 	}
@@ -364,9 +369,15 @@ build_constants_from_graph :: proc(graph: ^Graph, model_dir: string) -> (constan
 			if val, has_scalar := scalar_value.?; has_scalar {
 				// Only add if not already present (avoid duplicates)
 				if arg_name not_in constants {
-					scalar_array := make([]f32, 1)
-					scalar_array[0] = val
-					constants[arg_name] = scalar_array
+					// Create a scalar tensor (0-D or 1-D with single element)
+					scalar_data := make([]f32, 1)
+					scalar_data[0] = val
+					scalar_tensor := Tensor{
+						data = scalar_data,
+						sizes = []int{1},      // Scalar as 1-element tensor
+						strides = []int{1},
+					}
+					constants[arg_name] = scalar_tensor
 				}
 			}
 		}
@@ -376,7 +387,7 @@ build_constants_from_graph :: proc(graph: ^Graph, model_dir: string) -> (constan
 }
 
 // Build layers from graph nodes during initialization
-build_layers_from_graph :: proc(graph: ^Graph, weights: map[string][]f32) -> []Layer {
+build_layers_from_graph :: proc(graph: ^Graph, weights: map[string]Tensor) -> []Layer {
 	layers := make([dynamic]Layer)
 	
 	for &node in graph.nodes {
@@ -388,18 +399,19 @@ build_layers_from_graph :: proc(graph: ^Graph, weights: map[string][]f32) -> []L
 			weight_name := node.inputs[1].arg.as_tensor.?.name
 			bias_name := node.inputs[2].arg.as_tensor.?.name
 			
-			weight := weights[weight_name]
-			bias := weights[bias_name]
+			weight_tensor := weights[weight_name]
+			bias_tensor := weights[bias_name]
 			
-			// Get dimensions from metadata
-			weight_meta := graph.tensor_values[weight_name]
-			out_features := weight_meta.sizes[0].as_int
-			in_features := weight_meta.sizes[1].as_int
+			// Get dimensions from tensor sizes
+			out_features := weight_tensor.sizes[0]
+			in_features := weight_tensor.sizes[1]
 			
-			// Create Linear layer
-			layer = linear_create(in_features, out_features, weight, bias)
+			// Create Linear layer with tensors
+			layer = linear_create(in_features, out_features, weight_tensor, bias_tensor)
 
 
+        case Node_Operation.LayerNorm:
+            fmt.println(node)
         case Node_Operation.Arange:
             end := node.inputs[0].arg.as_int.?
             layer = arange_create(end)
@@ -437,15 +449,16 @@ build_layers_from_graph :: proc(graph: ^Graph, weights: map[string][]f32) -> []L
 // Execute the graph with input
 execute_graph :: proc(executor: ^Graph_Executor, input: []f32) -> (output: []f32, ok: bool) {
 	// Clear intermediate tensors from previous runs
-	for key in executor.tensors {
-		delete(executor.tensors[key])
+	for _, tensor in executor.tensors {
+		destroy_tensor(tensor)
 	}
 	clear(&executor.tensors)
 
     //TODO we cant assume that the input is called x forever
 	// Set input tensor (assuming single input named 'x')
-	executor.tensors["x"] = make([]f32, len(input))
-	copy(executor.tensors["x"], input)
+	input_data := make([]f32, len(input))
+	copy(input_data, input)
+	executor.tensors["x"] = make_1d_tensor(input_data)
 
     it := soa_zip(node=executor.graph.nodes, layer=executor.layers)
 	// Execute each node and its corresponding layer in order
@@ -467,11 +480,12 @@ execute_graph :: proc(executor: ^Graph_Executor, input: []f32) -> (output: []f32
 		return nil, false
 	}
 	
-	// Return copy of output
-	result := make([]f32, len(output_tensor))
-	copy(result, output_tensor)
+	// Return copy of output data
+	result := make([]f32, len(output_tensor.data))
+	copy(result, output_tensor.data)
 	return result, true
 }
+
 
 // Execute a single node with its pre-built layer
 execute_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^Layer) -> bool {
@@ -479,6 +493,8 @@ execute_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^Layer
 	switch node.operation {
 	case Node_Operation.Linear:
 		return execute_linear_node(executor, node, layer)
+    case Node_Operation.LayerNorm:
+        return execute_linear_node(executor, node, layer)
 	case Node_Operation.ReLU:
 		return execute_relu_node(executor, node)
     case Node_Operation.Add:
@@ -509,16 +525,17 @@ execute_linear_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer:
 	output_name := node.outputs[0].as_tensor.?.name
 	
 	// Fetch input tensor
-	input := executor.tensors[input_name] if input_name in executor.tensors else executor.weights[input_name]
+	input_tensor := executor.tensors[input_name] if input_name in executor.tensors else executor.weights[input_name]
 	
-	// Allocate output
-	output := make([]f32, linear_layer.out_features)
+	// Create output tensor
+	output_data := make([]f32, linear_layer.out_features)
+	output_tensor := make_1d_tensor(output_data)
 	
 	// Execute the layer
-	linear_forward(&linear_layer, input, output)
+	linear_forward(&linear_layer, input_tensor, &output_tensor)
 	
 	// Store result
-	executor.tensors[output_name] = output
+	executor.tensors[output_name] = output_tensor
 	return true
 }
 
@@ -529,16 +546,17 @@ execute_relu_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node) -> bool 
 	output_name := node.outputs[0].as_tensor.?.name
 
 	// Fetch input tensor
-	input := executor.tensors[input_name]
+	input_tensor := executor.tensors[input_name]
 
-	// Allocate output
-	output := make([]f32, len(input))
+	// Create output tensor
+	output_data := make([]f32, len(input_tensor.data))
+	output_tensor := make_1d_tensor(output_data)
 
 	// Execute the layer
-	relu_forward(input, output)
+	relu_forward(input_tensor, &output_tensor)
 
 	// Store result
-	executor.tensors[output_name] = output
+	executor.tensors[output_name] = output_tensor
 	return true
 }
 
@@ -556,62 +574,64 @@ execute_add_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node) -> bool {
 	}
 
 	// Determine output size (larger of the two inputs)
-	output_size := max(len(input_1), len(input_2))
-	output := make([]f32, output_size)
+	output_size := max(len(input_1.data), len(input_2.data))
+	output_data := make([]f32, output_size)
+	output_tensor := make_1d_tensor(output_data)
 	
 	// Execute add operation
-	add_forward(input_1, input_2, output)
+	add_forward(input_1, input_2, &output_tensor)
 	
 	// Store result
 	output_name := node.outputs[0].as_tensor.?.name
-	executor.tensors[output_name] = output
-	
+	executor.tensors[output_name] = output_tensor
+
 	return true
 }
+
 
 execute_sub_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node) -> bool {
     input_1, ok1 := get_tensor_from_arg(node.inputs[0].arg, executor)
     if !ok1 {
-        fmt.println("Failed to get first input for add operation")
+        fmt.println("Failed to get first input for sub operation")
         return false
     }
 
     input_2,  ok2 := get_tensor_from_arg(node.inputs[1].arg, executor)
     if !ok2 {
-        fmt.println("Failed to get second input for add operation")
+        fmt.println("Failed to get second input for sub operation")
         return false
     }
 
     // Determine output size (larger of the two inputs)
-    output_size := max(len(input_1), len(input_2))
-    output := make([]f32, output_size)
+    output_size := max(len(input_1.data), len(input_2.data))
+    output_data := make([]f32, output_size)
+	output_tensor := make_1d_tensor(output_data)
 
-    // Execute add operation
-    sub_forward(input_1, input_2, output)
+    // Execute sub operation
+    sub_forward(input_1, input_2, &output_tensor)
 
     // Store result
     output_name := node.outputs[0].as_tensor.?.name
-    executor.tensors[output_name] = output
+    executor.tensors[output_name] = output_tensor
 
-    return true
+    	return true
 }
 
 execute_arange_node:: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^Layer) -> bool {
     arange_layer := layer.(Arange) or_return
 
-    // Get input and output names
+    // Get output name
     output_name := node.outputs[0].as_tensor.?.name
 
     // Allocate output
-    output := make([]f32, arange_layer.end)
+    output_data := make([]f32, arange_layer.end)
 
-    for i in 0..<len(output){
-        output[i] = cast(f32)i
+    for i in 0..<len(output_data){
+        output_data[i] = cast(f32)i
     }
-    //arange_forward(output)
 
     // Store result
-    executor.tensors[output_name] = output
+    executor.tensors[output_name] = make_1d_tensor(output_data)
     return true
 }
 
@@ -619,41 +639,42 @@ execute_cat_node:: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^La
     l := layer.(Cat) or_return
     input_1, ok1 := get_tensor_from_arg(node.inputs[0].arg, executor)
     if !ok1 {
-        fmt.println("Failed to get first input")
+        fmt.println("Failed to get first input for cat")
         return false
     }
     input_2, ok2 := get_tensor_from_arg(node.inputs[1].arg, executor)
     if !ok2 {
-        fmt.println("Failed to get second input")
+        fmt.println("Failed to get second input for cat")
         return false
     }
+    
     output_name := node.outputs[0].as_tensor.?.name
-    output := make([]f32, len(input_1)+len(input_2))
+    output_data := make([]f32, len(input_1.data)+len(input_2.data))
+    
     if l.dim == 0 {
-        copy(output[:len(input_1)], input_1)
-        copy(output[len(input_2):], input_2)
+        copy(output_data[:len(input_1.data)], input_1.data)
+        copy(output_data[len(input_1.data):], input_2.data)
     }
     else {
         panic("Unsupported dimension for catting")
     }
 
-
-    executor.tensors[output_name] = output
+    executor.tensors[output_name] = make_1d_tensor(output_data)
     return true
 }
 
 execute_copy_node:: proc(executor: ^Graph_Executor, node: ^Graph_Node) -> bool {
     input_1, ok1 := get_tensor_from_arg(node.inputs[0].arg, executor)
     if !ok1 {
-        fmt.println("Failed to get first input")
+        fmt.println("Failed to get first input for copy")
         return false
     }
     output_name := node.outputs[0].as_tensor.?.name
 
-    output := make([]f32, len(input_1))
-    copy(output, input_1)
+    output_data := make([]f32, len(input_1.data))
+    copy(output_data, input_1.data)
 
-    executor.tensors[output_name] = output
+    executor.tensors[output_name] = make_1d_tensor(output_data)
     return true
 }
 
