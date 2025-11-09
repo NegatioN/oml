@@ -21,7 +21,12 @@ class Net(nn.Module):
     def forward(self, x):
         x = self.fc1(x) #torch.arange(4, dtype=torch.float32) # 8x1 -> 8x1
         x = F.relu(x)
-        x = self.fc2(x.reshape(4).reshape(1, 4))
+        print("a", x)
+        x = torch.permute(x, (1, 0))
+        print("b", x)
+        x = torch.permute(x, (1, 0))
+        print("c", x)
+        x = self.fc2(x)
         return x
 model = Net()
 

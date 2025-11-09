@@ -12,10 +12,8 @@ Tensor :: struct {
 
 //TODO make "tensor_data" or something, which we can swap out at the same time. This potentially has race conditions where sizes can differ from strides
 tensor_reshape :: proc(t: ^Tensor, sizes: []int) {
-    //fmt.println(t.sizes, sizes)
     //assert(len(t.sizes) == len(sizes), "Input sizes do not match existing sizes") TODO whats the correct logic for this check?
     
-    // Save old sizes and strides to delete at end of function
     old_sizes := t.sizes
     old_strides := t.strides
     defer delete(old_sizes)
@@ -27,6 +25,15 @@ tensor_reshape :: proc(t: ^Tensor, sizes: []int) {
     
     // Compute new strides based on new sizes
     t.strides = size_to_strides(t.sizes)
+}
+
+tensor_permute :: proc(t: ^Tensor, dims: []int) {
+    assert(len(t.sizes) == len(dims), "Input dims do not match existing dims")
+    new_sizes := make([]int, len(dims))
+    for e, i in dims {
+        new_sizes[i] = t.sizes[i]
+    }
+    tensor_reshape(t, new_sizes)
 }
 
 tensor_mean :: proc(t: Tensor) -> f32 {
@@ -73,14 +80,15 @@ destroy_tensor :: proc(t: Tensor) {
     delete(t.strides)
     delete(t.sizes)
 }
-
+import "core:slice"
 // Helper: create a simple 1D tensor from data
-make_1d_tensor :: proc(data: []f32) -> Tensor {
-    sizes := make([]int, 1)
-    sizes[0] = len(data)
+make_1d_tensor :: proc(data: []f32, num_dims: int = 1) -> Tensor {
+    sizes := make([]int, num_dims)
+    slice.fill(sizes, 1)
+    sizes[len(sizes)-1] = len(data)
 
-    strides := make([]int, 1)
-    strides[0] = 1
+    strides := make([]int, num_dims)
+    slice.fill(strides, 1)
 
     return Tensor{
         data = data,

@@ -154,7 +154,7 @@ get_tensor_from_arg :: proc(arg: Node_Arg, executor: ^Graph_Executor, allocator 
 }
 
 Node_Operation :: enum {
-    Linear, ReLU, Add, Sub, Arange, LiftFreshCopy, Cat, Noop, LayerNorm, Reshape, NotYetImpl, Unknown,
+    Linear, ReLU, Add, Sub, Arange, LiftFreshCopy, Cat, Noop, LayerNorm, Reshape, Permute, NotYetImpl, Unknown,
 }
 
 parse_operation :: proc(target: string) -> Node_Operation {
@@ -166,7 +166,7 @@ parse_operation :: proc(target: string) -> Node_Operation {
     case "torch.ops.aten.reshape.default":
         return .Reshape
     case "torch.ops.aten.permute.default":
-        return .NotYetImpl
+        return .Permute
     case "torch.ops.aten.conv1d.default":
         return .NotYetImpl
     case "torch.ops.aten.mean.dim":
@@ -417,7 +417,7 @@ build_layers_from_graph :: proc(graph: ^Graph, weights: map[string]Tensor) -> []
 
         case Node_Operation.LayerNorm:
             fmt.println(node)
-        case Node_Operation.Reshape:
+        case Node_Operation.Permute:
             fmt.println(node)
         case Node_Operation.NotYetImpl:
             fmt.println(node)
@@ -425,6 +425,7 @@ build_layers_from_graph :: proc(graph: ^Graph, weights: map[string]Tensor) -> []
             end := node.inputs[0].arg.as_int.?
             layer = arange_create(end)
 
+        case Node_Operation.Reshape:
         case Node_Operation.ReLU:
         case Node_Operation.Add:
         case Node_Operation.Sub:
@@ -467,8 +468,7 @@ execute_graph :: proc(executor: ^Graph_Executor, input: []f32) -> (output: []f32
 	// Set input tensor (assuming single input named 'x')
 	input_data := make([]f32, len(input))
 	copy(input_data, input)
-	executor.tensors["x"] = make_1d_tensor(input_data)
-
+    executor.tensors["x"] = make_1d_tensor(input_data, 2)
     it := soa_zip(node=executor.graph.nodes, layer=executor.layers)
 	// Execute each node and its corresponding layer in order
     //TODO the graph might not be so easy to execute in order when the model is more complex?
@@ -506,6 +506,8 @@ execute_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^Layer
         return execute_layernorm_node(executor, node, layer)
     case Node_Operation.Reshape:
         return execute_reshape_node(executor, node)
+    case Node_Operation.Permute:
+        return execute_permute_node(executor, node)
 	case Node_Operation.ReLU:
 		return execute_relu_node(executor, node)
     case Node_Operation.Add:
@@ -542,8 +544,8 @@ execute_linear_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer:
 	
 	// Create output tensor
 	output_data := make([]f32, linear_layer.out_features)
-	output_tensor := make_1d_tensor(output_data)
-	
+	output_tensor := make_1d_tensor(output_data, len(input_tensor.strides))
+
 	// Execute the layer
 	linear_forward(&linear_layer, input_tensor, &output_tensor)
 	
@@ -582,13 +584,28 @@ execute_reshape_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node) -> bo
     input_name := node.inputs[0].arg.as_tensor.?.name
     input_sizes := node.inputs[1].arg.as_ints.?
     output_name := node.outputs[0].as_tensor.?.name
-    //fmt.println(input_sizes)
 
     // Fetch input tensor
     input_tensor := executor.tensors[input_name]
 
     output_tensor := copy_tensor(&input_tensor)
     tensor_reshape(&output_tensor, input_sizes)
+
+    // Store result
+    executor.tensors[output_name] = output_tensor
+    return true
+}
+
+execute_permute_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node) -> bool {
+    input_name := node.inputs[0].arg.as_tensor.?.name
+    input_sizes := node.inputs[1].arg.as_ints.?
+    output_name := node.outputs[0].as_tensor.?.name
+
+    // Fetch input tensor
+    input_tensor := executor.tensors[input_name]
+
+    output_tensor := copy_tensor(&input_tensor)
+    tensor_permute(&output_tensor, input_sizes)
 
     // Store result
     executor.tensors[output_name] = output_tensor
@@ -605,7 +622,7 @@ execute_relu_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node) -> bool 
 
 	// Create output tensor
 	output_data := make([]f32, len(input_tensor.data))
-	output_tensor := make_1d_tensor(output_data)
+	output_tensor := make_1d_tensor(output_data, len(input_tensor.sizes))
 
 	// Execute the layer
 	relu_forward(input_tensor, &output_tensor)
@@ -631,7 +648,7 @@ execute_add_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node) -> bool {
 	// Determine output size (larger of the two inputs)
 	output_size := max(len(input_1.data), len(input_2.data))
 	output_data := make([]f32, output_size)
-	output_tensor := make_1d_tensor(output_data)
+	output_tensor := make_1d_tensor(output_data) //TODO fix output shape for an add operation
 	
 	// Execute add operation
 	add_tensors(input_1, input_2, &output_tensor)
