@@ -1,6 +1,7 @@
 package main
 
 import "core:math"
+import "core:fmt"
 
 Tensor :: struct {
     data: []f32, //TODO datatypes
@@ -9,16 +10,23 @@ Tensor :: struct {
     //assume storage_offset is always 0 to simplify
 }
 
-tensor_reshape :: proc(t: Tensor, sizes: []int) {
-    assert(len(t.sizes) == len(sizes), "Input sizes do not match existing sizes")
-    for e,i in sizes {
-        t.sizes[i] = e
-    }
-    strides := size_to_strides(t.sizes) //TODO just modify the strides of the tensor in place?
-    defer delete(strides)
-    for e,i in strides {
-        t.strides[i] = e
-    }
+//TODO make "tensor_data" or something, which we can swap out at the same time. This potentially has race conditions where sizes can differ from strides
+tensor_reshape :: proc(t: ^Tensor, sizes: []int) {
+    //fmt.println(t.sizes, sizes)
+    //assert(len(t.sizes) == len(sizes), "Input sizes do not match existing sizes") TODO whats the correct logic for this check?
+    
+    // Save old sizes and strides to delete at end of function
+    old_sizes := t.sizes
+    old_strides := t.strides
+    defer delete(old_sizes)
+    defer delete(old_strides)
+    
+    // Make a copy of the new sizes (don't just assign the reference!)
+    t.sizes = make([]int, len(sizes))
+    copy(t.sizes, sizes)
+    
+    // Compute new strides based on new sizes
+    t.strides = size_to_strides(t.sizes)
 }
 
 tensor_mean :: proc(t: Tensor) -> f32 {

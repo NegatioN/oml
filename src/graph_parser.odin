@@ -505,7 +505,7 @@ execute_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^Layer
     case Node_Operation.LayerNorm:
         return execute_layernorm_node(executor, node, layer)
     case Node_Operation.Reshape:
-        return execute_linear_node(executor, node, layer)
+        return execute_reshape_node(executor, node)
 	case Node_Operation.ReLU:
 		return execute_relu_node(executor, node)
     case Node_Operation.Add:
@@ -582,13 +582,13 @@ execute_reshape_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node) -> bo
     input_name := node.inputs[0].arg.as_tensor.?.name
     input_sizes := node.inputs[1].arg.as_ints.?
     output_name := node.outputs[0].as_tensor.?.name
-    fmt.println(input_sizes)
+    //fmt.println(input_sizes)
 
     // Fetch input tensor
     input_tensor := executor.tensors[input_name]
 
     output_tensor := copy_tensor(&input_tensor)
-    tensor_reshape(output_tensor, input_sizes)
+    tensor_reshape(&output_tensor, input_sizes)
 
     // Store result
     executor.tensors[output_name] = output_tensor
