@@ -154,7 +154,7 @@ get_tensor_from_arg :: proc(arg: Node_Arg, executor: ^Graph_Executor, allocator 
 }
 
 Node_Operation :: enum {
-    Linear, ReLU, Add, Sub, Arange, LiftFreshCopy, Cat, Noop, LayerNorm, Reshape, Permute, NotYetImpl, Unknown,
+    Linear, ReLU, Add, Sub, Arange, LiftFreshCopy, Cat, Noop, LayerNorm, Reshape, Permute, Mean1d, NotYetImpl, Unknown,
 }
 
 parse_operation :: proc(target: string) -> Node_Operation {
@@ -170,7 +170,7 @@ parse_operation :: proc(target: string) -> Node_Operation {
     case "torch.ops.aten.conv1d.default":
         return .NotYetImpl
     case "torch.ops.aten.mean.dim":
-        return .NotYetImpl
+        return .Mean1d
     case "torch.ops.aten.relu.default":
         return .ReLU
     case "torch.ops.aten.gelu.default": // Circle back and implement GELU
@@ -417,7 +417,7 @@ build_layers_from_graph :: proc(graph: ^Graph, weights: map[string]Tensor) -> []
 
         case Node_Operation.LayerNorm:
             fmt.println(node)
-        case Node_Operation.Permute:
+        case Node_Operation.Mean1d:
             fmt.println(node)
         case Node_Operation.NotYetImpl:
             fmt.println(node)
@@ -425,6 +425,7 @@ build_layers_from_graph :: proc(graph: ^Graph, weights: map[string]Tensor) -> []
             end := node.inputs[0].arg.as_int.?
             layer = arange_create(end)
 
+        case Node_Operation.Permute:
         case Node_Operation.Reshape:
         case Node_Operation.ReLU:
         case Node_Operation.Add:
@@ -508,6 +509,8 @@ execute_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node, layer: ^Layer
         return execute_reshape_node(executor, node)
     case Node_Operation.Permute:
         return execute_permute_node(executor, node)
+    case Node_Operation.Mean1d:
+        return execute_mean1d_node(executor, node)
 	case Node_Operation.ReLU:
 		return execute_relu_node(executor, node)
     case Node_Operation.Add:
@@ -630,6 +633,33 @@ execute_relu_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node) -> bool 
 	// Store result
 	executor.tensors[output_name] = output_tensor
 	return true
+}
+
+execute_mean1d_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node) -> bool {
+    // Get input and output names
+    input_name := node.inputs[0].arg.as_tensor.?.name
+    output_name := node.outputs[0].as_tensor.?.name
+    
+    // Get the dimension to reduce (usually in node.inputs[1])
+    dim_array := node.inputs[1].arg.as_ints.? 
+    if len(dim_array) != 1 {
+        fmt.println("Mean operation expects exactly one dimension, got:", len(dim_array))
+        return false
+    }
+    dim := dim_array[0]
+    
+    // Fetch input tensor
+    input_tensor := executor.tensors[input_name]
+    
+    // Compute mean along dimension
+    output_tensor, ok := mean_along_dim(input_tensor, dim)
+    if !ok {
+        return false
+    }
+    
+    // Store result
+    executor.tensors[output_name] = output_tensor
+    return true
 }
 
 execute_add_node :: proc(executor: ^Graph_Executor, node: ^Graph_Node) -> bool {

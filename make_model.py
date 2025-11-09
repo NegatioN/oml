@@ -13,7 +13,7 @@ class Net(nn.Module):
     def __init__(self):
         super(Net, self).__init__()
         self.fc1 = nn.Linear(1, 4)
-        self.fc2 = nn.Linear(4, 1)
+        self.fc2 = nn.Linear(4, 2)
         #self.m = nn.MaxPool1d(3, stride=2)
         # TODO tensor.sum()
         #TODO research hva som er minste nødvendige implementasjon for å få en "saklig" modell til å kjøre
@@ -21,13 +21,9 @@ class Net(nn.Module):
     def forward(self, x):
         x = self.fc1(x) #torch.arange(4, dtype=torch.float32) # 8x1 -> 8x1
         x = F.relu(x)
-        print("a", x)
-        x = torch.permute(x, (1, 0))
-        print("b", x)
-        x = torch.permute(x, (1, 0))
-        print("c", x)
         x = self.fc2(x)
-        return x
+        print("non-mean", x)
+        return x.mean(dim=1)
 model = Net()
 
 example_args = (torch.randn(1, 1),)

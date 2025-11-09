@@ -706,6 +706,152 @@ test_size_to_strides_indexing :: proc(t: ^testing.T) {
     testing.expect_value(t, idx_12, 5)
 }
 
+// ========== Mean along dimension tests ==========
+
+// Test: Mean along last dimension of 2D tensor
+@(test)
+test_mean_along_dim_2d_last :: proc(t: ^testing.T) {
+    // Input: [[1, 2, 3], [4, 5, 6]] shape [2, 3]
+    // Mean along dim 1: [[2], [5]] shape [2, 1]
+    data := []f32{1.0, 2.0, 3.0, 4.0, 5.0, 6.0}
+    input := make_tensor(data, []int{2, 3})
+    defer cleanup_tensor(input)
+    
+    output, ok := mean_along_dim(input, 1)
+    testing.expect(t, ok, "mean_along_dim should succeed")
+    defer destroy_tensor(output)
+    
+    // Check output shape
+    testing.expect_value(t, len(output.sizes), 2)
+    testing.expect_value(t, output.sizes[0], 2)
+    testing.expect_value(t, output.sizes[1], 1)
+    
+    // Check values
+    // Row 0: mean(1, 2, 3) = 2.0
+    // Row 1: mean(4, 5, 6) = 5.0
+    testing.expect_value(t, output.data[0], 2.0)
+    testing.expect_value(t, output.data[1], 5.0)
+}
+
+// Test: Mean along first dimension of 2D tensor
+@(test)
+test_mean_along_dim_2d_first :: proc(t: ^testing.T) {
+    // Input: [[1, 2, 3], [4, 5, 6]] shape [2, 3]
+    // Mean along dim 0: [[2.5, 3.5, 4.5]] shape [1, 3]
+    data := []f32{1.0, 2.0, 3.0, 4.0, 5.0, 6.0}
+    input := make_tensor(data, []int{2, 3})
+    defer cleanup_tensor(input)
+    
+    output, ok := mean_along_dim(input, 0)
+    testing.expect(t, ok, "mean_along_dim should succeed")
+    defer destroy_tensor(output)
+    
+    // Check output shape
+    testing.expect_value(t, len(output.sizes), 2)
+    testing.expect_value(t, output.sizes[0], 1)
+    testing.expect_value(t, output.sizes[1], 3)
+    
+    // Check values: mean([1,4]) = 2.5, mean([2,5]) = 3.5, mean([3,6]) = 4.5
+    testing.expect_value(t, output.data[0], 2.5)
+    testing.expect_value(t, output.data[1], 3.5)
+    testing.expect_value(t, output.data[2], 4.5)
+}
+
+// Test: Mean along middle dimension of 3D tensor
+@(test)
+test_mean_along_dim_3d_middle :: proc(t: ^testing.T) {
+    // Input: shape [2, 3, 2]
+    // [[[1, 2], [3, 4], [5, 6]], [[7, 8], [9, 10], [11, 12]]]
+    data := []f32{1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0}
+    input := make_tensor(data, []int{2, 3, 2})
+    defer cleanup_tensor(input)
+    
+    output, ok := mean_along_dim(input, 1)
+    testing.expect(t, ok, "mean_along_dim should succeed")
+    defer destroy_tensor(output)
+    
+    // Check output shape: [2, 1, 2]
+    testing.expect_value(t, len(output.sizes), 3)
+    testing.expect_value(t, output.sizes[0], 2)
+    testing.expect_value(t, output.sizes[1], 1)
+    testing.expect_value(t, output.sizes[2], 2)
+    
+    // Check values
+    // First matrix: mean([[1,2], [3,4], [5,6]]) along rows = [[3, 4]]
+    testing.expect_value(t, output.data[0], 3.0)  // mean(1, 3, 5)
+    testing.expect_value(t, output.data[1], 4.0)  // mean(2, 4, 6)
+    // Second matrix: mean([[7,8], [9,10], [11,12]]) along rows = [[9, 10]]
+    testing.expect_value(t, output.data[2], 9.0)  // mean(7, 9, 11)
+    testing.expect_value(t, output.data[3], 10.0) // mean(8, 10, 12)
+}
+
+// Test: Mean along dimension with 1D tensor
+@(test)
+test_mean_along_dim_1d :: proc(t: ^testing.T) {
+    // Input: [1, 2, 3, 4, 5] shape [5]
+    // Mean along dim 0: [3] shape [1]
+    data := []f32{1.0, 2.0, 3.0, 4.0, 5.0}
+    input := make_tensor(data, []int{5})
+    defer cleanup_tensor(input)
+    
+    output, ok := mean_along_dim(input, 0)
+    testing.expect(t, ok, "mean_along_dim should succeed")
+    defer destroy_tensor(output)
+    
+    // Check output shape
+    testing.expect_value(t, len(output.sizes), 1)
+    testing.expect_value(t, output.sizes[0], 1)
+    
+    // Check value: mean(1, 2, 3, 4, 5) = 3.0
+    testing.expect_value(t, output.data[0], 3.0)
+}
+
+// Test: Mean with invalid dimension
+@(test)
+test_mean_along_dim_invalid :: proc(t: ^testing.T) {
+    data := []f32{1.0, 2.0, 3.0, 4.0}
+    input := make_tensor(data, []int{2, 2})
+    defer cleanup_tensor(input)
+    
+    // Try invalid dimension (out of range)
+    _, ok := mean_along_dim(input, 2)
+    testing.expect(t, !ok, "mean_along_dim should fail with invalid dimension")
+    
+    // Try negative dimension
+    _, ok2 := mean_along_dim(input, -1)
+    testing.expect(t, !ok2, "mean_along_dim should fail with negative dimension")
+}
+
+// Test: Mean along last dimension of 4D tensor
+@(test)
+test_mean_along_dim_4d :: proc(t: ^testing.T) {
+    // Input: shape [2, 2, 2, 3] - 24 elements total
+    data := make([]f32, 24)
+    defer delete(data)
+    for i in 0..<24 {
+        data[i] = f32(i + 1)
+    }
+    input := make_tensor(data, []int{2, 2, 2, 3})
+    defer cleanup_tensor(input)
+    
+    // Mean along last dimension (dim 3)
+    output, ok := mean_along_dim(input, 3)
+    testing.expect(t, ok, "mean_along_dim should succeed")
+    defer destroy_tensor(output)
+    
+    // Check output shape: [2, 2, 2, 1]
+    testing.expect_value(t, len(output.sizes), 4)
+    testing.expect_value(t, output.sizes[0], 2)
+    testing.expect_value(t, output.sizes[1], 2)
+    testing.expect_value(t, output.sizes[2], 2)
+    testing.expect_value(t, output.sizes[3], 1)
+    
+    // First few values: mean(1,2,3) = 2, mean(4,5,6) = 5, mean(7,8,9) = 8
+    testing.expect_value(t, output.data[0], 2.0)
+    testing.expect_value(t, output.data[1], 5.0)
+    testing.expect_value(t, output.data[2], 8.0)
+}
+
 // Test 13: Test with actual model operations (add_forward and sub_forward)
 @(test)
 test_add_tensors:: proc(t: ^testing.T) {

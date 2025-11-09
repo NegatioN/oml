@@ -10,6 +10,7 @@ Tensor :: struct {
     //assume storage_offset is always 0 to simplify
 }
 
+//TODO handle -1 as size for reshape
 //TODO make "tensor_data" or something, which we can swap out at the same time. This potentially has race conditions where sizes can differ from strides
 tensor_reshape :: proc(t: ^Tensor, sizes: []int) {
     //assert(len(t.sizes) == len(sizes), "Input sizes do not match existing sizes") TODO whats the correct logic for this check?
@@ -49,6 +50,73 @@ f32_mean :: proc(d: []f32) -> f32 {
 }
 
 mean :: proc{tensor_mean, f32_mean} // function overloading
+
+// Compute mean along a specific dimension, reducing that dimension to size 1
+// Example: tensor with shape [2, 3, 4], mean along dim 1 -> output shape [2, 1, 4]
+mean_along_dim :: proc(input: Tensor, dim: int) -> (output: Tensor, ok: bool) {
+    // Validate dimension
+    if dim < 0 || dim >= len(input.sizes) {
+        fmt.printf("Invalid dimension %d for tensor with %d dimensions\n", dim, len(input.sizes))
+        return {}, false
+    }
+    
+    // Calculate output shape (same as input but with dim set to 1)
+    output_sizes := make([]int, len(input.sizes))
+    copy(output_sizes, input.sizes)
+    output_sizes[dim] = 1
+    
+    // Calculate output data size
+    output_data_size := 1
+    for size in output_sizes {
+        output_data_size *= size
+    }
+    
+    // Allocate output data
+    output_data := make([]f32, output_data_size)
+    
+    // Size to reduce across
+    reduce_size := input.sizes[dim]
+    
+    // Create temporary index array for iteration
+    indices := make([]int, len(input.sizes))
+    defer delete(indices)
+    
+    // Iterate through all output positions
+    for out_idx in 0..<output_data_size {
+        // Convert linear output index to multi-dimensional indices
+        temp_idx := out_idx
+        for i := len(output_sizes) - 1; i >= 0; i -= 1 {
+            indices[i] = temp_idx % output_sizes[i]
+            temp_idx /= output_sizes[i]
+        }
+        
+        // Sum across the reduction dimension
+        sum := f32(0)
+        for d in 0..<reduce_size {
+            indices[dim] = d
+            
+            // Convert multi-dimensional indices to linear input index
+            input_idx := 0
+            for i in 0..<len(indices) {
+                input_idx += indices[i] * input.strides[i]
+            }
+            
+            sum += input.data[input_idx]
+        }
+        
+        // Store the mean
+        output_data[out_idx] = sum / f32(reduce_size)
+    }
+    
+    // Create output tensor with new shape
+    output_tensor := Tensor{
+        data = output_data,
+        sizes = output_sizes,
+        strides = size_to_strides(output_sizes),
+    }
+    
+    return output_tensor, true
+}
 
 stddev :: proc(t: Tensor) -> f32 {
     m := mean(t)
